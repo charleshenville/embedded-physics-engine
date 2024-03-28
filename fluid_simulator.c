@@ -182,32 +182,111 @@ void drawBresenhamLine(int x0, int y0, int x1, int y1, short int colour){
 }
 
 // =======================================================================================================
+//                                               MOUSE DRIVER
+// =======================================================================================================
+
+#define PS2_BASE        0xFF200100
+
+typedef struct mouseData {
+  int x;
+  int y;
+  bool left, right, middle;
+} mouseData;
+
+void clearFIFO() {
+  volatile int *PS2_ptr = (int *)PS2_BASE;
+  int PS2_data = *PS2_ptr;
+  int RAVAIL = PS2_data>>16;
+  while(RAVAIL > 0){
+    PS2_data = *PS2_ptr;
+    RAVAIL = PS2_data>>16;
+  }
+}
+
+void updateMouse(mouseData *data) {
+  volatile int *PS2_ptr = (int *)PS2_BASE;
+  int PS2_data, RVALID;
+  char inputData;
+  PS2_data = *(PS2_ptr);  // read the Data register in the PS/2 port
+  inputData = PS2_data & 0xFF;
+  RVALID = PS2_data & 0x8000;  // extract the RVALID field
+  if (RVALID) {
+    data->left = inputData & 1;
+    data->middle = inputData & 4;
+    data->right = inputData & 2;
+
+    PS2_data = *(PS2_ptr);
+    inputData = PS2_data & 0xFF;
+    data->x += (2*inputData);
+
+    PS2_data = *(PS2_ptr);
+    inputData = PS2_data & 0xFF;
+    data->y += (2*inputData);
+
+    if (data->x >= MAX_X) data->x = MAX_X - 1;
+    if (data->y >= MAX_Y) data->y = MAX_Y - 1;
+
+    if (data->x < 0) data->x = 0;
+    if (data->y < 0) data->y = 0;
+  }
+  clearFIFO();
+}
+
+void drawMouse(mouseData *data, short int colour) {
+  drawIndividualPixel(data->x, data->y, colour);
+  if (data->x > 0) drawIndividualPixel(data->x - 1, data->y, colour);
+  if (data->y > 0) drawIndividualPixel(data->x, data->y - 1, colour);
+  if (data->x < MAX_X - 1) drawIndividualPixel(data->x + 1, data->y, colour);
+  if (data->y < MAX_Y - 1) drawIndividualPixel(data->x, data->y + 1, colour);
+}
+
+void intializeMouse(mouseData *data) {
+  volatile int *PS2_ptr = (int *)PS2_BASE;
+  *(PS2_ptr) = 0xFF;  // reset
+
+  data->x = MAX_X / 2;
+  data->y = MAX_Y / 2;
+
+  data->left = false;
+  data->middle = false;
+  data->right = false;
+}
+
+// =======================================================================================================
 //                                          FLUID SIMULATION UTILS
 // =======================================================================================================
 
-#define NUM_PARTICLES       12
+// -g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx
+
+#define NUM_PARTICLES       57 // 192, 48, 12
 
 #define WATER_COLOUR        27743
 #define WATER_HUE           0.62
 #define BLACK               0
+#define WHITE               0xFFFF
+
 #define PRESSURE_COLUMNS    24
 #define PRESSURE_ROWS       32
 
 #define G                   9.81
-#define K                   50.0
+#define K                   20.0
 #define PARTICLE_MASS       1
 #define SPF                 0.01 // Seconds Per Frame
-#define ELASTICITY          0.4 // 0 to 1
-#define VELOCITY_COLOUR_SENSITIVITY 200.0
+#define ELASTICITY          0.3 // 0 to 1
+#define VELOCITY_COLOUR_SENSITIVITY 50.0
 #define VISCOSITY           0.2
 #define ROOT_TWO_SCALE      1.42
 
-#define M_PER_PX            0.01
-#define PX_PER_M            100.0
+#define TUG_ACCELERATION    15.0
+#define TUG_VELOCITY        0.001
 
-#define DENSITY_RESTING     1000.0
+#define M_PER_PX            0.013333333
+#define PX_PER_M            75.0
+
+#define DENSITY_RESTING     200.0
 	
 float h; // Spacing parameter between fluids in the simulation
+int hpx; // h but in px
 float inv_rho_naught;
 float alpha; // Cubic Bezier Constant for W_ij calc
 
@@ -246,14 +325,16 @@ void initParticles() {
     int initX = stepX/2;
     int initY = stepY/2;
 
+    hpx = (stepX + stepY) / 2.0;
     h = M_PER_PX * (stepX + stepY) / 2.0;
+
     alpha = 5.0/(14.0*M_PI*h*h);
     inv_rho_naught = 1.0/(float)DENSITY_RESTING;
     
     // DEBUG
-    printf("\nh: %f", h);
-    printf("\nalpha: %f", alpha);
-    printf("\ninv density: %f", inv_rho_naught);
+    // printf("\nh: %f", h);
+    // printf("\nalpha: %f", alpha);
+    // printf("\ninv density: %f", inv_rho_naught);
 
     int xStepCount = 0;
     int yStepCount = 0;
@@ -321,20 +402,35 @@ void stepSPHPositions(int i) {
     
 }
 
-void stepSPHVelocities(int i) {
-    // Border collision handling, maybe add h deltas to these checks?
+void doVelocityStepCheck(int i) {
+    // Border collision handling and application of TUG Accelerations.
     if((allParticles[i].x >= (MAX_X-1) && allParticles[i].vx > 0) || (allParticles[i].x <= 0 && allParticles[i].vx < 0)) {
-        if(allParticles[i].x <= 0){
-            printf("\nBSG::%f", allParticles[i].vx);
-            printf("\nBSGGG::%f", -allParticles[i].vx*ELASTICITY);
-        }
         allParticles[i].vx = -allParticles[i].vx*ELASTICITY;
     }
+    else if(allParticles[i].x <= hpx && allParticles[i].vx < TUG_VELOCITY) {
+        allParticles[i].ax += TUG_ACCELERATION;
+    }
+    else if(allParticles[i].x >= (MAX_X-1-hpx) && allParticles[i].vx > -TUG_VELOCITY) {
+        allParticles[i].ax -= TUG_ACCELERATION;
+    }
+
     if((allParticles[i].y >= (MAX_Y-1) && allParticles[i].vy > 0) || (allParticles[i].y <= 0 && allParticles[i].vy < 0)) {
         allParticles[i].vy = -allParticles[i].vy*ELASTICITY;
     }
+    else if(allParticles[i].y <= hpx && allParticles[i].vy < TUG_VELOCITY) {
+        allParticles[i].ay += TUG_ACCELERATION;
+    }
+    else if(allParticles[i].y >= (MAX_Y-1-hpx) && allParticles[i].vy > -TUG_VELOCITY) {
+        allParticles[i].ay -= TUG_ACCELERATION;
+    }
+}
+
+void stepSPHVelocities(int i) {
+    
     allParticles[i].vx += allParticles[i].ax*SPF;
     allParticles[i].vy += allParticles[i].ay*SPF;
+    allParticles[i].colour = hueToRGB565(WATER_HUE-sqrt(allParticles[i].vx*allParticles[i].vx + allParticles[i].vy*allParticles[i].vy)/VELOCITY_COLOUR_SENSITIVITY);
+
 }
 
 void calculateSPHAccelerations(int i) {
@@ -350,6 +446,9 @@ void calculateSPHAccelerations(int i) {
 
     float pressureRatio_i = allParticles[i].pressure / (allParticles[i].density * allParticles[i].density);
     float inv_rho_j, pressureRatio_j;
+
+    // doVelocityStepCheck(i);
+    // if (allParticles[i].ax != 0 || allParticles[i].ay != G) return;
 
     for (int j = 0; j < NUM_PARTICLES; j++) {
 
@@ -447,22 +546,11 @@ void timeStepSPHApproximation() {
 
         allParticles[i].pressure = K * pow((allParticles[i].density*inv_rho_naught), 7) - K;
 
-        // if(i==0||i==NUM_PARTICLES-1){
-            // printf("\n\n***PARTICLE %d***", i);
-            // printf("\ndensity: %f", allParticles[i].density);
-            // printf("\npressure: %f", allParticles[i].pressure);
-            // printf("\nx: %d", allParticles[i].x);
-            // printf("\ny: %d", allParticles[i].y);
-            // printf("\nvx: %f", allParticles[i].vx);
-            // printf("\nvy: %f", allParticles[i].vy);
-            // printf("\nax: %f", allParticles[i].ax);
-            // printf("\nay: %f", allParticles[i].ay);
-        // }
-
         // 3. Calculate Accelearations (Approx)
         calculateSPHAccelerations(i);
 
         // 4. Step Velocities and then positions.
+        doVelocityStepCheck(i);
         stepSPHVelocities(i);
         stepSPHPositions(i);
 
@@ -473,15 +561,33 @@ void timeStepSPHApproximation() {
 // int simulateFluid(void){ // main for this simulation
 int main(void){ // main for this simulation
 
+    mouseData mData;
+    mouseData prevmData;
+
     initParticles();
+
+    intializeMouse(&mData);
+    prevmData = mData;
+
     vgaSetup();
 
     // Program loop
     while(1) {
 
+        // Erase Stuff
         eraseParticles();
+        // drawMouse(&prevmData, BLACK);
+
+        // Draw Stuff
         drawParticles();
+        // drawMouse(&mData, WHITE);
+        
+        // Update Stuff 
+        // prevmData = mData;
+        // updateMouse(&mData);
         timeStepSPHApproximation();
+
+        // Wait for Stuff
         waitForVsync();
 
     }

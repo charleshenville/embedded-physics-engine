@@ -14,7 +14,8 @@
             <source_file filepath="true">fluid_simulator.c</source_file>
         </source_files>
         <options>
-            <compiler_flags>-g -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -lm</compiler_flags>
+            <compiler_flags>-g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx</compiler_flags>
+            <linker_flags>-lm</linker_flags>
             <emulate_unimpl_instructions>true</emulate_unimpl_instructions>
             <use_small_c_library>false</use_small_c_library>
         </options>
