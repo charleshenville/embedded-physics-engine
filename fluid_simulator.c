@@ -186,6 +186,7 @@ void drawBresenhamLine(int x0, int y0, int x1, int y1, short int colour){
 // =======================================================================================================
 
 #define PS2_BASE        0xFF200100
+#define MOUSE_RADIUS    2
 
 typedef struct mouseData {
   int x;
@@ -233,11 +234,22 @@ void updateMouse(mouseData *data) {
 }
 
 void drawMouse(mouseData *data, short int colour) {
-  drawIndividualPixel(data->x, data->y, colour);
-  if (data->x > 0) drawIndividualPixel(data->x - 1, data->y, colour);
-  if (data->y > 0) drawIndividualPixel(data->x, data->y - 1, colour);
-  if (data->x < MAX_X - 1) drawIndividualPixel(data->x + 1, data->y, colour);
-  if (data->y < MAX_Y - 1) drawIndividualPixel(data->x, data->y + 1, colour);
+    
+    int x = data -> x;
+    int y = data -> y;
+
+    if(x<MOUSE_RADIUS) x=MOUSE_RADIUS;
+    else if (x>MAX_X-1-MOUSE_RADIUS) x = MAX_X-1-MOUSE_RADIUS;
+    if(y<MOUSE_RADIUS) y=MOUSE_RADIUS;
+    else if (y>MAX_Y-1-MOUSE_RADIUS) y = MAX_Y-1-MOUSE_RADIUS;
+
+    for(int i = -1; i<2; i++) {
+        drawIndividualPixel(x + i, y + MOUSE_RADIUS, colour);
+        drawIndividualPixel(x + i, y - MOUSE_RADIUS, colour);
+        drawIndividualPixel(x + MOUSE_RADIUS, y + i, colour);
+        drawIndividualPixel(x - MOUSE_RADIUS, y + i, colour);
+    }
+
 }
 
 void intializeMouse(mouseData *data) {
@@ -288,6 +300,7 @@ void intializeMouse(mouseData *data) {
 float h; // Spacing parameter between fluids in the simulation
 int hpx; // h but in px
 float inv_rho_naught;
+float nu; // used for viscosity related acceleration
 float alpha; // Cubic Bezier Constant for W_ij calc
 
 typedef struct drawParticle {
@@ -304,6 +317,7 @@ typedef struct Particle {
     float ax, ay;
     float pressure, density;
     bool neighbours[NUM_PARTICLES];
+    float gradQ[NUM_PARTICLES];
     float neighbourDXs[NUM_PARTICLES];
     float neighbourDYs[NUM_PARTICLES];
     float neighbourDistances[NUM_PARTICLES];
@@ -330,6 +344,7 @@ void initParticles() {
 
     alpha = 5.0/(14.0*M_PI*h*h);
     inv_rho_naught = 1.0/(float)DENSITY_RESTING;
+    nu = h*h/100.0;
     
     // DEBUG
     // printf("\nh: %f", h);
@@ -442,7 +457,7 @@ void calculateSPHAccelerations(int i) {
     float dx, dy;
     float dvx, dvy;
     float x_ij2, viscosScale;
-    float x_ij, q, rho = 0;
+    float x_ij, q;
 
     float pressureRatio_i = allParticles[i].pressure / (allParticles[i].density * allParticles[i].density);
     float inv_rho_j, pressureRatio_j;
@@ -455,20 +470,22 @@ void calculateSPHAccelerations(int i) {
         if (!allParticles[i].neighbours[j]) continue; // Dont check non-neighbours
         if (allParticles[i].neighbourDistances[j] == 0) continue; // Everything goes to zero if no distance
 
+        q = allParticles[i].gradQ[j];
+        if(!q) continue;
+
         dx = allParticles[i].neighbourDXs[j];
         dy = allParticles[i].neighbourDYs[j];
 
         x_ij = allParticles[i].neighbourDistances[j];
         x_ij2 = x_ij*x_ij;
 
-        q = x_ij/h;
-        if(q < 1){
-            q = - 3 * pow((2-q), 2) + 12 * pow((1-q), 2);
-        } else if (q < 2) {
-            q = - 3 * pow((2-q), 2);
-        } else {
-            continue; // q is zero so save calcs by continuing
-        }
+        // if(q < 1){
+        //     q = - 3 * pow((2-q), 2) + 12 * pow((1-q), 2);
+        // } else if (q < 2) {
+        //     q = - 3 * pow((2-q), 2);
+        // } else {
+        //     continue; // q is zero so save calcs by continuing
+        // }
         
         GRADW_ijx = alpha * dx * q / (x_ij * h);
         GRADW_ijy = alpha * dy * q / (x_ij * h);
@@ -485,7 +502,7 @@ void calculateSPHAccelerations(int i) {
         dvx = allParticles[i].vx - allParticles[j].vx;
         dvy = allParticles[i].vy - allParticles[j].vy;
 
-        viscosScale = (VISCOSITY+VISCOSITY) * inv_rho_j * (dx*GRADW_ijx + dy*GRADW_ijy) / (x_ij2+h*h/100.0);
+        viscosScale = VISCOSITY * inv_rho_j * (dx*GRADW_ijx + dy*GRADW_ijy) / (x_ij2+nu);
         allParticles[i].ax += viscosScale * dvx;
         allParticles[i].ay += viscosScale * dvy;
 
@@ -501,7 +518,8 @@ void timeStepSPHApproximation() {
         // 2. Calculate Density and Pressure at every particle i
 
         float dx, dy;
-        float x_ij, q, rho = 0;
+        float x_ij, q, rho;
+        float fp, sp, gradQ;
 		
         for (int j = i + 1; j < NUM_PARTICLES; j++) {
 			
@@ -523,14 +541,30 @@ void timeStepSPHApproximation() {
                 allParticles[j].neighbours[i] = true;
 
                 q = x_ij/h;
-                
+
                 if(q < 1){
-                    q = pow((2-q), 3) - 4 * pow((1-q), 3);
+                    fp = pow((2-q), 2);
+                    sp = pow((1-q), 2);
+
+                    gradQ = -3 * fp + 12 * sp;
+                    allParticles[i].gradQ[j] = gradQ;
+                    allParticles[j].gradQ[i] = gradQ;
+
+                    q = fp*(2-q) - 4 * sp*(1-q);
                 } else if (q < 2) {
-                    q = pow((2-q), 3);
+                    fp = pow((2-q), 2);
+
+                    gradQ = -3 * fp;
+                    allParticles[i].gradQ[j] = gradQ;
+                    allParticles[j].gradQ[i] = gradQ;
+
+                    q = fp*(2-q);
                 } else {
+                    allParticles[i].gradQ[j] = 0;
+                    allParticles[j].gradQ[i] = 0;
                     continue; // q is zero so save calcs by continuing
                 }
+
                 
                 rho = alpha*q;
                 //printf("\nrho: %f", rho);
@@ -558,77 +592,143 @@ void timeStepSPHApproximation() {
 
 }
 
-// int simulateFluid(void){ // main for this simulation
-int main(void){ // main for this simulation
-
-    mouseData mData;
-    mouseData prevmData;
-
-    initParticles();
-
-    intializeMouse(&mData);
-    prevmData = mData;
-
-    vgaSetup();
-
-    // Program loop
-    while(1) {
-
-        // Erase Stuff
-        eraseParticles();
-        // drawMouse(&prevmData, BLACK);
-
-        // Draw Stuff
-        drawParticles();
-        // drawMouse(&mData, WHITE);
-        
-        // Update Stuff 
-        // prevmData = mData;
-        // updateMouse(&mData);
-        timeStepSPHApproximation();
-
-        // Wait for Stuff
-        waitForVsync();
-
-    }
-
-    return 0;
-
-}
-
 // =======================================================================================================
 //                                             RIGID BODY UTILS
 // =======================================================================================================
 
-void applyForcesToParticles() {
+#define RB_HUE              0.35
+#define RB_COLOUR           0x07e0
 
-    for (int i = 0; i < NUM_PARTICLES; i++) {
+#define ELASTICITY_RB       0.8
+#define SPH_RB              0.2
+#define NUM_BODIES          3
 
-        // *********************************************** UPDATE PARTICLE VELOCITIES *********************************************************
+#define VERTICIES_PER_BODY  4
+#define VERT_VARIANCE       20
 
-        // Apply Gravity
-        if(allParticles[i].y > 0 && allParticles[i].y < (MAX_Y-1)) {
-            //allParticles[i].vy += G*SPF;
-        } else {
-            allParticles[i].vy = -allParticles[i].vy*ELASTICITY;
+typedef struct drawBody {
+
+    int xs [VERTICIES_PER_BODY];
+    int ys [VERTICIES_PER_BODY]; 
+
+} drawBody;
+
+typedef struct rigidBody {
+
+    int xs [VERTICIES_PER_BODY];
+    int ys [VERTICIES_PER_BODY]; 
+    float pxs [VERTICIES_PER_BODY];
+    float pys [VERTICIES_PER_BODY];
+    float edgeDistances [VERTICIES_PER_BODY];
+    float vxs [VERTICIES_PER_BODY];
+    float vys [VERTICIES_PER_BODY];
+    float axs [VERTICIES_PER_BODY];
+    float ays [VERTICIES_PER_BODY];
+    float mass;
+    float theta;
+    float omega;
+    float alpha;
+    short int colour;
+
+} rigidBody;
+
+bool collisionMap [MAX_X][MAX_Y];
+drawBody eraseRBs [NUM_BODIES];
+rigidBody allBodies [NUM_BODIES];
+
+void initRigidBodies() {
+
+    float x = (float)NUM_BODIES*(float)MAX_Y/(float)MAX_X;
+    int amtRows = ceil(sqrt(ceil(x)));
+    int amtColumns = ceil((double)amtRows*(double)MAX_X/(double)MAX_Y);
+
+    int stepX = MAX_X/amtColumns;
+    int stepY = MAX_Y/amtRows;
+
+    int avgStepParam =  (stepX + stepY) >> 3;
+
+    int initX = stepX/2;
+    int initY = stepY/2;
+
+    int xStepCount = 0;
+    int yStepCount = 0;
+
+    for (int i = 0; i < NUM_BODIES; i++) {
+
+        allBodies[i].colour = RB_COLOUR;
+
+        if(xStepCount >= amtColumns) {
+            xStepCount = 0;
+            yStepCount++;
         }
-        allParticles[i].vy += G*SPF;
+        if(yStepCount >= amtRows) {
+            yStepCount = 0;
+        }
 
-        // Apply Navier Forces 
+        int centX =  initX + xStepCount * stepX;
+        int centY =  initY + yStepCount * stepY;
 
-        // Update Colours
-        allParticles[i].colour = hueToRGB565(WATER_HUE-sqrt(allParticles[i].vx*allParticles[i].vx + allParticles[i].vy*allParticles[i].vy)/VELOCITY_COLOUR_SENSITIVITY);
+        int signX = -1;
+        int signY = -1;
+        bool changeFlag = false;
 
-        // *********************************************** UPDATE PARTICLE POSITIONS *********************************************************
-        // updateParticlePosition(i);
-        allParticles[i].x += allParticles[i].vx*SPF;
-        allParticles[i].y += allParticles[i].vy*SPF;
+        for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+
+            srand(i*j);
+            allBodies[i].xs[j] = centX + signX*avgStepParam + rand() % VERT_VARIANCE - (VERT_VARIANCE >> 1);
+            allBodies[i].ys[j] = centY + signY*avgStepParam + rand() % VERT_VARIANCE - (VERT_VARIANCE >> 1);
+            
+            eraseRBs[i].xs[j] = allBodies[i].xs[j];
+            eraseRBs[i].ys[j] = allBodies[i].ys[j];
+
+            allBodies[i].vxs[j] = 0;
+            allBodies[i].vys[j] = 0;
+
+            if(signX == -1) {
+                signX = 1;
+            } else {
+                if(changeFlag) {
+                    signX = -1;
+                }
+                changeFlag = true;
+                signY = 1;
+            }
+
+        }
+
+        xStepCount++;
 
     }
 
 }
 
-void updateParticlePositions() {
+void eraseBodies() {
+
+    for (int i = 0; i<NUM_BODIES; i++) {
+        for (int j = 1; j<VERTICIES_PER_BODY; j++) {
+            drawBresenhamLine(eraseRBs[i].xs[j-1], eraseRBs[i].ys[j-1], eraseRBs[i].xs[j], eraseRBs[i].ys[j], BLACK);
+        }
+        drawBresenhamLine(eraseRBs[i].xs[VERTICIES_PER_BODY-1], eraseRBs[i].ys[VERTICIES_PER_BODY-1], eraseRBs[i].xs[0], eraseRBs[i].ys[0], BLACK);
+    }   
+
+}
+
+void drawBodies() {
+
+    for (int i = 0; i<NUM_BODIES; i++) {
+        for (int j = 1; j<VERTICIES_PER_BODY; j++) {
+            drawBresenhamLine(allBodies[i].xs[j-1], allBodies[i].ys[j-1], allBodies[i].xs[j], allBodies[i].ys[j], allBodies[i].colour);
+        }
+        drawBresenhamLine(allBodies[i].xs[VERTICIES_PER_BODY-1], allBodies[i].ys[VERTICIES_PER_BODY-1], allBodies[i].xs[0], allBodies[i].ys[0], allBodies[i].colour);
+    }   
+
+}
+
+void stepBodyPositions() {
+
+}
+
+void stepBodyVelocities() {
 
     bool currentIsNull = false;
     float tempX, tempY;
@@ -690,4 +790,78 @@ void updateParticlePositions() {
         }
     }
     
+}
+
+void timeStepRBForceApplication() {
+
+    for (int i = 0; i < NUM_PARTICLES; i++) {
+
+        // Apply Gravity
+        if(allParticles[i].y > 0 && allParticles[i].y < (MAX_Y-1)) {
+            //allParticles[i].vy += G*SPF;
+        } else {
+            allParticles[i].vy = -allParticles[i].vy*ELASTICITY;
+        }
+        allParticles[i].vy += G*SPF;
+
+        // Apply Navier Forces 
+
+        // Update Colours
+        allParticles[i].colour = hueToRGB565(WATER_HUE-sqrt(allParticles[i].vx*allParticles[i].vx + allParticles[i].vy*allParticles[i].vy)/VELOCITY_COLOUR_SENSITIVITY);
+
+        // updateParticlePosition(i);
+        allParticles[i].x += allParticles[i].vx*SPF;
+        allParticles[i].y += allParticles[i].vy*SPF;
+
+    }
+
+}
+
+// =======================================================================================================
+//                                                   MAIN
+// =======================================================================================================
+
+bool isFluidSim = false;
+int main(void){ // main for this simulation
+
+    mouseData mData;
+    mouseData prevmData;
+
+    initParticles();
+    initRigidBodies();
+
+    intializeMouse(&mData);
+    prevmData = mData;
+
+    vgaSetup();
+
+    // Program loop
+    while(1) {
+
+        // Erase Stuff
+        if (isFluidSim) eraseParticles();
+        else eraseBodies();
+
+        // drawMouse(&prevmData, BLACK);
+
+        // Draw Stuff
+        if (isFluidSim) drawParticles();
+        else drawBodies();
+
+        // drawMouse(&mData, WHITE);
+        
+        // Update Stuff 
+        // prevmData = mData;
+        // updateMouse(&mData);
+        
+        if (isFluidSim) timeStepSPHApproximation();
+        // else timeStepRBForceApplication();
+
+        // Wait for Stuff
+        waitForVsync();
+
+    }
+
+    return 0;
+
 }
