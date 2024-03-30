@@ -599,7 +599,7 @@ void timeStepSPHApproximation() {
 #define RB_HUE              0.35
 #define RB_COLOUR           0x07e0
 
-#define ELASTICITY_RB       0.2
+#define ELASTICITY_RB       0.6
 #define SPH_RB              0.02
 #define NUM_BODIES          3
 
@@ -607,7 +607,7 @@ void timeStepSPHApproximation() {
 #define M_PER_PX_RB         0.1
 
 #define VERTICIES_PER_BODY  4
-#define VERT_VARIANCE       20
+#define VERT_VARIANCE       1
 #define VELOCITY_COLOUR_SENSITIVITY_RB 100.0
 
 #define BODY_DENSITY        2
@@ -733,10 +733,11 @@ void initRigidBodies() {
                 signY = 1;
             }
 
-            int nextIndex = j==VERTICIES_PER_BODY-1 ? 0 : j+1;
-            runningAreaCount += (allBodies[i].pxs[j] + allBodies[i].pxs[nextIndex]) * (allBodies[i].pys[j] - allBodies[i].pys[nextIndex]) / 2.0;
+            if(j!=0) runningAreaCount += (allBodies[i].pxs[j-1] + allBodies[i].pxs[j]) * (allBodies[i].pys[j-1] - allBodies[i].pys[j]) / 2.0;
 
         }
+
+        runningAreaCount += (allBodies[i].pxs[VERTICIES_PER_BODY-1] + allBodies[i].pxs[0]) * (allBodies[i].pys[VERTICIES_PER_BODY-1] - allBodies[i].pys[0]) / 2.0;
 
         allBodies[i].cx = M_PER_PX_RB * sumX/(float)VERTICIES_PER_BODY;
         allBodies[i].cy = M_PER_PX_RB * sumY/(float)VERTICIES_PER_BODY;
@@ -802,6 +803,9 @@ void stepBodyPositions(int i) {
     allBodies[i].cx += allBodies[i].v.x * SPH_RB;
     allBodies[i].cy += allBodies[i].v.y * SPH_RB;
 
+    // Revert last position application if any vert out of bounds.
+    bool mustAdjust = false;
+
     float ndx, ndy, nt;
     for (int j = 0; j < VERTICIES_PER_BODY; j++) {
         
@@ -817,38 +821,35 @@ void stepBodyPositions(int i) {
 
         allBodies[i].xs[j] = PX_PER_M_RB * allBodies[i].pxs[j];
         allBodies[i].ys[j] = PX_PER_M_RB * allBodies[i].pys[j];
-
-        // Revert last position application if any vert out of bounds.
-        bool mustAdjust = false;
-
+        
+        // Logic for necessary aadjustment if any
         if (allBodies[i].xs[j] < 0 ){
-            allBodies[i].cx += 0 - allBodies[i].xs[j];
+            allBodies[i].cx += 0 - M_PER_PX_RB * allBodies[i].xs[j];
+            mustAdjust = true;
         } else if (allBodies[i].xs[j] > (MAX_X-1)){
-            allBodies[i].cx -= allBodies[i].xs[j] - (MAX_X-1);
+            allBodies[i].cx -=  M_PER_PX_RB * (allBodies[i].xs[j] - MAX_X + 1);
+            mustAdjust = true;
         }
         if (allBodies[i].ys[j] < 0 ){
-            allBodies[i].cy += 0 - allBodies[i].ys[j];
+            allBodies[i].cy += 0 - M_PER_PX_RB * allBodies[i].ys[j];
+            mustAdjust = true;
         } else if (allBodies[i].ys[j] > (MAX_Y-1)){
-            allBodies[i].cy -= allBodies[i].ys[j] - (MAX_Y-1);
+            allBodies[i].cy -= M_PER_PX_RB * (allBodies[i].ys[j] - MAX_Y + 1);
+            mustAdjust = true;
         }
 
-        if(mustAdjust) {
+    }
 
-            allBodies[i].theta = pt;
-            for(int k = 0; k < VERTICIES_PER_BODY; k++) {
-                nt = allBodies[i].constThetas[k] + allBodies[i].theta;
-                ndx = allBodies[i].vDistances[k] * cos(nt);
-                ndy = allBodies[i].vDistances[k] * sin(nt);
+    for(int k = 0; mustAdjust && (k < VERTICIES_PER_BODY); k++) {
+        nt = allBodies[i].constThetas[k] + allBodies[i].theta;
+        ndx = allBodies[i].vDistances[k] * cos(nt);
+        ndy = allBodies[i].vDistances[k] * sin(nt);
 
-                allBodies[i].pxs[k] = allBodies[i].cx + ndx;
-                allBodies[i].pys[k] = allBodies[i].cy + ndy;
-            }
+        allBodies[i].pxs[k] = allBodies[i].cx + ndx;
+        allBodies[i].pys[k] = allBodies[i].cy + ndy;
 
-            allBodies[i].xs[j] = PX_PER_M_RB * allBodies[i].pxs[j];
-            allBodies[i].ys[j] = PX_PER_M_RB * allBodies[i].pys[j];
-
-        }
-
+        allBodies[i].xs[k] = PX_PER_M_RB * allBodies[i].pxs[k];
+        allBodies[i].ys[k] = PX_PER_M_RB * allBodies[i].pys[k];
     }
 
 }
@@ -918,7 +919,7 @@ void timeStepRBForceApplication() {
         float torque = 0;
         for (int j = 0; j < VERTICIES_PER_BODY; j++) {
             if (!allBodies[i].extForces[j].isActive) continue;
-            torque += allBodies[i].extForces[j].r.x * allBodies[i].extForces[j].force.y - allBodies[i].extForces[j].r.y * allBodies[i].extForces[j].force.x;
+            torque -= allBodies[i].extForces[j].r.x * allBodies[i].extForces[j].force.y - allBodies[i].extForces[j].r.y * allBodies[i].extForces[j].force.x;
         }
         allBodies[i].alpha = torque / allBodies[i].I;
         checkCollisions(i);
