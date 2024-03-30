@@ -270,7 +270,7 @@ void intializeMouse(mouseData *data) {
 
 // -g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx
 
-#define NUM_PARTICLES       57 // 192, 48, 12
+#define NUM_PARTICLES       48 // 192, 48, 12
 
 #define WATER_COLOUR        27743
 #define WATER_HUE           0.62
@@ -418,7 +418,7 @@ void stepSPHPositions(int i) {
 }
 
 void doVelocityStepCheck(int i) {
-    // Border collision handling and application of TUG Accelerations.
+    // Container collision handling and application of TUG Accelerations.
     if((allParticles[i].x >= (MAX_X-1) && allParticles[i].vx > 0) || (allParticles[i].x <= 0 && allParticles[i].vx < 0)) {
         allParticles[i].vx = -allParticles[i].vx*ELASTICITY;
     }
@@ -599,42 +599,67 @@ void timeStepSPHApproximation() {
 #define RB_HUE              0.35
 #define RB_COLOUR           0x07e0
 
-#define ELASTICITY_RB       0.8
-#define SPH_RB              0.2
+#define ELASTICITY_RB       0.2
+#define SPH_RB              0.02
 #define NUM_BODIES          3
+
+#define PX_PER_M_RB         10.0
+#define M_PER_PX_RB         0.1
 
 #define VERTICIES_PER_BODY  4
 #define VERT_VARIANCE       20
+#define VELOCITY_COLOUR_SENSITIVITY_RB 100.0
 
-typedef struct drawBody {
+#define BODY_DENSITY        2
+
+typedef struct Vector2D {
+
+    float x;
+    float y;
+
+} Vector2D;
+
+typedef struct ExternalForce {
+    
+    Vector2D r;
+    Vector2D force;
+    bool isActive;
+
+} ExternalForce;
+
+typedef struct DrawBody {
 
     int xs [VERTICIES_PER_BODY];
     int ys [VERTICIES_PER_BODY]; 
 
-} drawBody;
+} DrawBody;
 
-typedef struct rigidBody {
+typedef struct RigidBody {
 
     int xs [VERTICIES_PER_BODY];
     int ys [VERTICIES_PER_BODY]; 
     float pxs [VERTICIES_PER_BODY];
     float pys [VERTICIES_PER_BODY];
-    float edgeDistances [VERTICIES_PER_BODY];
-    float vxs [VERTICIES_PER_BODY];
-    float vys [VERTICIES_PER_BODY];
-    float axs [VERTICIES_PER_BODY];
-    float ays [VERTICIES_PER_BODY];
+    float vDistances [VERTICIES_PER_BODY];
+    Vector2D v;
+    Vector2D a;
+    float cx, cy;
+    float I;
     float mass;
     float theta;
+    float constThetas [VERTICIES_PER_BODY];
     float omega;
     float alpha;
+
+    ExternalForce extForces [VERTICIES_PER_BODY];
+
     short int colour;
 
-} rigidBody;
+} RigidBody;
 
 bool collisionMap [MAX_X][MAX_Y];
-drawBody eraseRBs [NUM_BODIES];
-rigidBody allBodies [NUM_BODIES];
+DrawBody eraseRBs [NUM_BODIES];
+RigidBody allBodies [NUM_BODIES];
 
 void initRigidBodies() {
 
@@ -672,29 +697,72 @@ void initRigidBodies() {
         int signY = -1;
         bool changeFlag = false;
 
+        float sumX = 0;
+        float sumY = 0;
+
+        float runningAreaCount = 0;
+
+        allBodies[i].v.x = 0;
+        allBodies[i].v.y = 0;
+        allBodies[i].theta = 0;
+        allBodies[i].omega = 0;
+
         for (int j = 0; j < VERTICIES_PER_BODY; j++) {
 
-            srand(i*j);
+            srand(i+j);
             allBodies[i].xs[j] = centX + signX*avgStepParam + rand() % VERT_VARIANCE - (VERT_VARIANCE >> 1);
             allBodies[i].ys[j] = centY + signY*avgStepParam + rand() % VERT_VARIANCE - (VERT_VARIANCE >> 1);
             
             eraseRBs[i].xs[j] = allBodies[i].xs[j];
             eraseRBs[i].ys[j] = allBodies[i].ys[j];
 
-            allBodies[i].vxs[j] = 0;
-            allBodies[i].vys[j] = 0;
+            allBodies[i].pxs[j] = M_PER_PX_RB * allBodies[i].xs[j];
+            allBodies[i].pys[j] = M_PER_PX_RB * allBodies[i].ys[j];
+
+            sumX += allBodies[i].pxs[j];
+            sumY += allBodies[i].pys[j];
 
             if(signX == -1) {
                 signX = 1;
             } else {
                 if(changeFlag) {
                     signX = -1;
+                    changeFlag = false;
                 }
                 changeFlag = true;
                 signY = 1;
             }
 
+            int nextIndex = j==VERTICIES_PER_BODY-1 ? 0 : j+1;
+            runningAreaCount += (allBodies[i].pxs[j] + allBodies[i].pxs[nextIndex]) * (allBodies[i].pys[j] - allBodies[i].pys[nextIndex]) / 2.0;
+
         }
+
+        allBodies[i].cx = M_PER_PX_RB * sumX/(float)VERTICIES_PER_BODY;
+        allBodies[i].cy = M_PER_PX_RB * sumY/(float)VERTICIES_PER_BODY;
+
+        float maxX = -1;
+        float maxY = -1;
+        float minX = M_PER_PX_RB * MAX_X;
+        float minY = M_PER_PX_RB * MAX_Y;
+
+        for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+
+            maxX = allBodies[i].pxs[j] > maxX ? allBodies[i].pxs[j] : maxX;
+            maxY = allBodies[i].pys[j] > maxY ? allBodies[i].pys[j] : maxY;
+            minX = allBodies[i].pxs[j] < minX ? allBodies[i].pxs[j] : minX;
+            minY = allBodies[i].pys[j] < minY ? allBodies[i].pys[j] : minY;
+
+            float dx = allBodies[i].cx - allBodies[i].pxs[j];
+            float dy = allBodies[i].cy - allBodies[i].pys[j];
+
+            allBodies[i].vDistances[j] = sqrt(dx*dx+dy*dy);
+            allBodies[i].constThetas[j] = atan(dy/dx);
+
+        }
+
+        allBodies[i].mass = BODY_DENSITY * abs(runningAreaCount);
+        allBodies[i].I = allBodies[i].mass * (pow(maxX-minX, 2) + pow(maxY-minY, 2)) / 12.0;
 
         xStepCount++;
 
@@ -724,94 +792,138 @@ void drawBodies() {
 
 }
 
-void stepBodyPositions() {
+void stepBodyPositions(int i) {
+
+    // Must also update positions of all verticies
+
+    float pt = allBodies[i].theta;
+
+    allBodies[i].theta += allBodies[i].omega * SPH_RB;
+    allBodies[i].cx += allBodies[i].v.x * SPH_RB;
+    allBodies[i].cy += allBodies[i].v.y * SPH_RB;
+
+    float ndx, ndy, nt;
+    for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+        
+        eraseRBs[i].xs[j] = allBodies[i].xs[j];
+        eraseRBs[i].ys[j] = allBodies[i].ys[j];
+
+        nt = allBodies[i].constThetas[j] + allBodies[i].theta;
+        ndx = allBodies[i].vDistances[j] * cos(nt);
+        ndy = allBodies[i].vDistances[j] * sin(nt);
+
+        allBodies[i].pxs[j] = allBodies[i].cx + ndx;
+        allBodies[i].pys[j] = allBodies[i].cy + ndy;
+
+        allBodies[i].xs[j] = PX_PER_M_RB * allBodies[i].pxs[j];
+        allBodies[i].ys[j] = PX_PER_M_RB * allBodies[i].pys[j];
+
+        // Revert last position application if any vert out of bounds.
+        bool mustAdjust = false;
+
+        if (allBodies[i].xs[j] < 0 ){
+            allBodies[i].cx += 0 - allBodies[i].xs[j];
+        } else if (allBodies[i].xs[j] > (MAX_X-1)){
+            allBodies[i].cx -= allBodies[i].xs[j] - (MAX_X-1);
+        }
+        if (allBodies[i].ys[j] < 0 ){
+            allBodies[i].cy += 0 - allBodies[i].ys[j];
+        } else if (allBodies[i].ys[j] > (MAX_Y-1)){
+            allBodies[i].cy -= allBodies[i].ys[j] - (MAX_Y-1);
+        }
+
+        if(mustAdjust) {
+
+            allBodies[i].theta = pt;
+            for(int k = 0; k < VERTICIES_PER_BODY; k++) {
+                nt = allBodies[i].constThetas[k] + allBodies[i].theta;
+                ndx = allBodies[i].vDistances[k] * cos(nt);
+                ndy = allBodies[i].vDistances[k] * sin(nt);
+
+                allBodies[i].pxs[k] = allBodies[i].cx + ndx;
+                allBodies[i].pys[k] = allBodies[i].cy + ndy;
+            }
+
+            allBodies[i].xs[j] = PX_PER_M_RB * allBodies[i].pxs[j];
+            allBodies[i].ys[j] = PX_PER_M_RB * allBodies[i].pys[j];
+
+        }
+
+    }
 
 }
 
-void stepBodyVelocities() {
+void stepBodyVelocities(int i) {
 
-    bool currentIsNull = false;
-    float tempX, tempY;
-    float referenceX, referenceY;
-    for (int i=0; i<NUM_PARTICLES; i++){
-        currentIsNull = !(int)allParticles[i].vx && !(int)allParticles[i].vy;
-        referenceX = allParticles[i].x - allParticles[i].vx*SPF;
-        referenceY = allParticles[i].y - allParticles[i].vy*SPF;
-        // Apply Collision Mechanics (upper triangular manner is all that is merited -> O(n^2)/2)
-        for (int j = i + 1; j < NUM_PARTICLES; j++) {
+    allBodies[i].omega += allBodies[i].alpha * SPH_RB;
+    allBodies[i].v.x += allBodies[i].a.x * SPH_RB;
+    allBodies[i].v.y += allBodies[i].a.y * SPH_RB;
 
-            if ((allParticles[i].x != allParticles[j].x) || (allParticles[i].y != allParticles[j].y)) continue; // cont. if pos is diff
-            if(currentIsNull && !(int)allParticles[j].vx && !(int)allParticles[j].vy) continue; // cont. if velocities are zero
+    allBodies[i].colour = hueToRGB565(RB_HUE-sqrt(allBodies[i].v.x*allBodies[i].v.x + allBodies[i].v.y*allBodies[i].v.y)/VELOCITY_COLOUR_SENSITIVITY_RB);
 
-            // For all parties involved in this collision:
-            // Remove Previous Velocity Application 
-            allParticles[i].x -= allParticles[i].vx*SPF;
-            allParticles[i].y -= allParticles[i].vy*SPF;
-            allParticles[j].x -= allParticles[j].vx*SPF;
-            allParticles[j].y -= allParticles[j].vy*SPF;
-            // Set New Velocity
-            tempX = allParticles[i].vx;
-            tempY = allParticles[i].vy;
-            allParticles[i].vx = allParticles[j].vx*ELASTICITY;
-            allParticles[i].vy = allParticles[j].vy*ELASTICITY;
-            allParticles[j].vx = tempX*ELASTICITY;
-            allParticles[j].vy = tempY*ELASTICITY;
-            // Apply New Velocity
-            allParticles[i].x += allParticles[i].vx*SPF;
-            allParticles[i].y += allParticles[i].vy*SPF;
-            allParticles[j].x += allParticles[j].vx*SPF;
-            allParticles[j].y += allParticles[j].vy*SPF;
+}
 
-            // If our change didnt do anything:
-            if ((allParticles[i].x == allParticles[j].x) && (allParticles[i].y == allParticles[j].y)) {
-                // Remove Previous Velocity Application (Again)
-                allParticles[i].x -= allParticles[i].vx*SPF;
-                allParticles[i].y -= allParticles[i].vy*SPF;
-                allParticles[j].x -= allParticles[j].vx*SPF;
-                allParticles[j].y -= allParticles[j].vy*SPF;
+void checkCollisions(int i) {
+
+    for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+        
+        bool setActive = false;
+        // Container collision handling
+        if(allBodies[i].xs[j] >= (MAX_X-1) || allBodies[i].xs[j] <= 0) {
+            
+            if((allBodies[i].v.x > 0) == (allBodies[i].xs[j] > 0)) {
+                // allBodies[i].omega = -allBodies[i].omega * ELASTICITY_RB;
+                allBodies[i].v.x = -allBodies[i].v.x * ELASTICITY_RB;
             }
+
+            allBodies[i].extForces[j].force.x = -allBodies[i].mass * allBodies[i].a.x;
+            
+            setActive = true;
+
+        }
+        if(allBodies[i].ys[j] >= (MAX_Y-1) || allBodies[i].ys[j] <= 0) {
+
+            if((allBodies[i].v.y > 0) == (allBodies[i].ys[j] >= (MAX_Y-1))) {
+                // allBodies[i].omega = -allBodies[i].omega * ELASTICITY_RB;
+                allBodies[i].v.y = -allBodies[i].v.y * ELASTICITY_RB;
+            }
+
+            allBodies[i].extForces[j].force.y = -allBodies[i].mass * allBodies[i].a.y;
+            
+            setActive = true;
 
         }
 
-        // If, for whatever reason, we went out of bounds after velocity application, fix them manually.
-        if (allParticles[i].x < 0 || allParticles[i].x > (MAX_X-1)) {
-            if (allParticles[i].x < 0){
-                allParticles[i].x = 0;
-            } else {
-                allParticles[i].x = MAX_X-1;
-            }
+        if (setActive) {
+            allBodies[i].extForces[j].r.x = allBodies[i].cx - allBodies[i].pxs[j];
+            allBodies[i].extForces[j].r.y = allBodies[i].cy - allBodies[i].pys[j];
+        } else {
+            allBodies[i].extForces[j].force.x = 0;
+            allBodies[i].extForces[j].force.y = 0;
         }
-        if (allParticles[i].y < 0 || allParticles[i].y > (MAX_Y-1)) {
-            if (allParticles[i].y < 0){
-                allParticles[i].y = 0;
-            } else {
-                allParticles[i].y = MAX_Y-1;
-            }
-        }
+        allBodies[i].extForces[j].isActive = setActive;
+
     }
-    
+
 }
 
 void timeStepRBForceApplication() {
 
-    for (int i = 0; i < NUM_PARTICLES; i++) {
-
-        // Apply Gravity
-        if(allParticles[i].y > 0 && allParticles[i].y < (MAX_Y-1)) {
-            //allParticles[i].vy += G*SPF;
-        } else {
-            allParticles[i].vy = -allParticles[i].vy*ELASTICITY;
+    // model collisions with normal forces.
+    for (int i = 0; i < NUM_BODIES; i++) {
+        
+        allBodies[i].a.x = 0;
+        allBodies[i].a.y = G;
+        
+        float torque = 0;
+        for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+            if (!allBodies[i].extForces[j].isActive) continue;
+            torque += allBodies[i].extForces[j].r.x * allBodies[i].extForces[j].force.y - allBodies[i].extForces[j].r.y * allBodies[i].extForces[j].force.x;
         }
-        allParticles[i].vy += G*SPF;
-
-        // Apply Navier Forces 
-
-        // Update Colours
-        allParticles[i].colour = hueToRGB565(WATER_HUE-sqrt(allParticles[i].vx*allParticles[i].vx + allParticles[i].vy*allParticles[i].vy)/VELOCITY_COLOUR_SENSITIVITY);
-
-        // updateParticlePosition(i);
-        allParticles[i].x += allParticles[i].vx*SPF;
-        allParticles[i].y += allParticles[i].vy*SPF;
+        allBodies[i].alpha = torque / allBodies[i].I;
+        checkCollisions(i);
+        stepBodyVelocities(i);
+        stepBodyPositions(i);
 
     }
 
@@ -855,7 +967,7 @@ int main(void){ // main for this simulation
         // updateMouse(&mData);
         
         if (isFluidSim) timeStepSPHApproximation();
-        // else timeStepRBForceApplication();
+        else timeStepRBForceApplication();
 
         // Wait for Stuff
         waitForVsync();
