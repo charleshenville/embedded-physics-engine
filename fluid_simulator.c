@@ -601,7 +601,7 @@ void timeStepSPHApproximation() {
 
 #define ELASTICITY_RB       0.4
 #define SPH_RB              0.2
-#define NUM_BODIES          3
+#define NUM_BODIES          6
 
 #define PX_PER_M_RB         1.0
 #define M_PER_PX_RB         1.0
@@ -657,9 +657,91 @@ typedef struct RigidBody {
 
 } RigidBody;
 
-bool collisionMap [MAX_X][MAX_Y];
+short int collisionMap [MAX_X][MAX_Y];
 DrawBody eraseRBs [NUM_BODIES];
 RigidBody allBodies [NUM_BODIES];
+
+void fillCollisionSegment(int x0, int y0, int x1, int y1, int scale) {
+	
+	bool isSteep = abs(x0-x1) < abs(y0-y1);
+    bool isAdditive = x0>x1;
+    int xGoVal = -1;
+    int yStopVal = -1;
+
+	if(isSteep){
+		swap(&x0, &y0);
+		swap(&x1, &y1);
+	}
+	if(x0>x1){
+		swap(&x0, &x1);
+		swap(&y0, &y1);
+	}
+	
+	int dx = x1 - x0;
+	int dy = abs(y1 - y0);
+	int error = -dx/2;
+	
+	int moveY = y1>y0 ? 1 : -1;
+	
+	int y = y0;
+	int x = x0;
+	
+	while(x <= x1) {
+		
+        if ((isSteep && (xGoVal != y)) || (!isSteep && (xGoVal != x))){
+            if (isSteep) {xGoVal = y; yStopVal = x;}
+            else {xGoVal = x; yStopVal = y;}
+            
+            for (int collY = yStopVal; collY >= 0; collY--){
+                if(isAdditive) {
+                    if(collisionMap[xGoVal][collY] == scale) break;
+                    collisionMap[xGoVal][collY] += scale;
+                }
+                else {
+                    if(collisionMap[xGoVal][collY] == -scale) break;
+                    collisionMap[xGoVal][collY] -= scale;
+                }
+            }
+            
+        }
+		
+		error = error + dy;
+		if (error > 0){
+			y = y + moveY;
+			error = error - dx;
+		}
+		
+		x++;
+		
+	}
+
+}
+
+void clearCollisionMap() {
+    for (int x = 0; x < MAX_X; x++){
+        for (int y = 0; y < MAX_Y; y++){
+            collisionMap[x][y] = 0;
+        }
+    }
+}
+
+void updateCollisionMap(int i) {
+    int cScale = MAX_Y - (PX_PER_M_RB * allBodies[i].cy);
+    // int cScale = 1;
+    for (int j = 1; j < VERTICIES_PER_BODY; j++){
+        fillCollisionSegment(allBodies[i].xs[j-1], allBodies[i].ys[j-1], allBodies[i].xs[j], allBodies[i].ys[j], cScale);
+    }
+    fillCollisionSegment(allBodies[i].xs[VERTICIES_PER_BODY-1], allBodies[i].ys[VERTICIES_PER_BODY-1], allBodies[i].xs[0], allBodies[i].ys[0], cScale);
+}
+
+void visualizeCollisionMap(){
+    for (int x = 0; x < (MAX_X); x++){
+        for (int y = 0; y < MAX_Y; y++){
+            if (collisionMap[x][y] > 0) drawIndividualPixel(x, y, WHITE);
+            else drawIndividualPixel(x, y, BLACK);
+        }
+    }
+}
 
 void initRigidBodies() {
 
@@ -690,8 +772,8 @@ void initRigidBodies() {
             yStepCount = 0;
         }
 
-        int centX =  initX + xStepCount * stepX;
-        int centY =  initY + yStepCount * stepY;
+        int centX = initX + xStepCount * stepX;
+        int centY = initY + yStepCount * stepY;
 
         int signX = -1;
         int signY = -1;
@@ -721,6 +803,9 @@ void initRigidBodies() {
 
             sumX += allBodies[i].pxs[j];
             sumY += allBodies[i].pys[j];
+
+            printf("\nsX:%d", signX);
+            printf("\nsY:%d\n\n", signY);
 
             if(signX == -1) {
                 signX = 1;
@@ -874,12 +959,10 @@ void checkCollisions(int i) {
         if(allBodies[i].xs[j] >= (MAX_X-1) || allBodies[i].xs[j] <= 0) {
             
             if((allBodies[i].v.x > 0) == (allBodies[i].xs[j] > 0)) {
-                allBodies[i].omega = -allBodies[i].omega * ELASTICITY_RB;
                 allBodies[i].v.x = -allBodies[i].v.x * ELASTICITY_RB;
             }
 
             allBodies[i].extForces[j].force.x = -allBodies[i].mass * allBodies[i].a.x;
-            
             setActive = true;
             collisionCount++;
 
@@ -887,36 +970,31 @@ void checkCollisions(int i) {
         if(allBodies[i].ys[j] >= (MAX_Y-1) || allBodies[i].ys[j] <= 0) {
 
             if((allBodies[i].v.y > 0) == (allBodies[i].ys[j] >= (MAX_Y-1))) {
-                allBodies[i].omega = -allBodies[i].omega * ELASTICITY_RB;
                 allBodies[i].v.y = -allBodies[i].v.y * ELASTICITY_RB;
             }
 
             allBodies[i].extForces[j].force.y = -allBodies[i].mass * allBodies[i].a.y;
-            
             setActive = true;
             collisionCount++;
 
         }
 
         if (collisionCount > 1) {
-            for(int k = 0; k <=j; k++){
+            for(int k = 0; k <= j; k++){
                 allBodies[i].extForces[k].force.x = 0;
                 allBodies[i].extForces[k].force.y = 0;
                 allBodies[i].extForces[k].isActive = false;
             }
             allBodies[i].alpha = 0;
-            // allBodies[i].omega = 0;
-            // allBodies[i].v.x *= ELASTICITY_RB;
-            // allBodies[i].v.y *= ELASTICITY_RB;
-            // if(allBodies[i].v.x < 0.01) allBodies[i].v.x = 0;
-            // if(allBodies[i].v.y < 0.01) allBodies[i].v.y = 0;
-            // allBodies[i].a.x = 0;
-            // allBodies[i].a.y = 0;
-            collisionCount = 0;
+            allBodies[i].v.x = 0;
+            allBodies[i].v.y = 0;
+            allBodies[i].a.x = 0;
+            allBodies[i].a.y = 0;
             continue;
         }
         
         if (setActive) {
+            //if((allBodies[i].omega > 0) == (allBodies[i].alpha > 0)) allBodies[i].omega = -allBodies[i].omega * ELASTICITY_RB;
             allBodies[i].omega = 0;
             allBodies[i].extForces[j].r.x = allBodies[i].pxs[j] - allBodies[i].cx;
             allBodies[i].extForces[j].r.y = allBodies[i].pys[j] - allBodies[i].cy;
