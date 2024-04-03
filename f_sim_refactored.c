@@ -271,7 +271,7 @@ void intializeMouse(mouseData *data) {
 
 // -g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx
 
-#define NUM_PARTICLES       75 // 192, 48, 12
+#define NUM_PARTICLES       125 // 192, 48, 12
 
 #define WATER_COLOUR        27743
 #define WATER_HUE           0.62
@@ -283,9 +283,9 @@ void intializeMouse(mouseData *data) {
 
 #define INIT_VAR            9
 
-#define G                   2
-#define K                   200.0
-#define H_H                 20.0
+#define G                   9.8
+#define K                   10.0
+#define H_H                 8.0
 #define PARTICLE_MASS       0.1
 #define SPF                 0.02 // Seconds Per Frame
 #define ELASTICITY          0.3 // 0 to 1
@@ -293,8 +293,8 @@ void intializeMouse(mouseData *data) {
 #define VISCOSITY           0.01
 #define ROOT_TWO_SCALE      1.414
 
-#define TUG_ACCELERATION    2.0
-#define TUG_VELOCITY        0.001
+#define TUG_ACCELERATION    20.0
+#define TUG_VELOCITY        0.000001
 
 #define M_PER_PX            0.02
 #define PX_PER_M            50.0
@@ -302,7 +302,7 @@ void intializeMouse(mouseData *data) {
 #define DENSITY_RESTING     500.0
 
 // use malloc to create all of these instread of static
-#define NUM_BUCKETS 16
+#define NUM_BUCKETS 32
 #define BUCKET_WIDTH (MAX_X/NUM_BUCKETS)
 #define HALF_BUCKET_WIDTH (BUCKET_WIDTH>>1)
 
@@ -314,6 +314,7 @@ int neighbourBucketIndexes[3] = {0};
 int buckets_even[NUM_BUCKETS][NUM_PARTICLES];
 int buckets_odd[NUM_BUCKETS][NUM_PARTICLES];
 int lastSeen[NUM_PARTICLES][NUM_PARTICLES];
+int lastSeen2[NUM_PARTICLES][NUM_PARTICLES];
 int timeStep = 0;
 	
 float h; // Spacing parameter between fluids in the simulation
@@ -377,6 +378,10 @@ void initParticles() {
 	
     for (int i = 0; i < NUM_PARTICLES; i++) {
 		
+        for(int j = 0; j < NUM_PARTICLES; j++){
+            lastSeen[i][j] = -1;
+            lastSeen2[i][j] = -1;
+        }
 		srand(i);
         if(xStepCount >= amtColumns) {
             xStepCount = 0;
