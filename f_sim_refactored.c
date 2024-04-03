@@ -271,7 +271,7 @@ void intializeMouse(mouseData *data) {
 
 // -g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx
 
-#define NUM_PARTICLES       192 // 192, 48, 12
+#define NUM_PARTICLES       75 // 192, 48, 12
 
 #define WATER_COLOUR        27743
 #define WATER_HUE           0.62
@@ -283,12 +283,12 @@ void intializeMouse(mouseData *data) {
 
 #define INIT_VAR            9
 
-#define G                   5.0
+#define G                   2
 #define K                   200.0
-#define H_H                 4.0
+#define H_H                 20.0
 #define PARTICLE_MASS       0.1
 #define SPF                 0.02 // Seconds Per Frame
-#define ELASTICITY          0.2 // 0 to 1
+#define ELASTICITY          0.3 // 0 to 1
 #define VELOCITY_COLOUR_SENSITIVITY 50.0
 #define VISCOSITY           0.01
 #define ROOT_TWO_SCALE      1.414
