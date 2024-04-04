@@ -1,3 +1,14 @@
+#include <stdbool.h>
+#include <stdio.h>
+
+#define PS2_BASE 0xFF200100
+#define MAX_X 319
+#define MAX_Y 239
+#define FPGA_PIXEL_BUF_BASE		0xff203020
+#define MOUSE_RADIUS 2
+#define BUTTON_X 301
+#define BUTTON_Y 4
+
 struct mouseData {
   int x;
   int y;
@@ -6,21 +17,14 @@ struct mouseData {
 
 typedef struct mouseData mouseData;
 
-void clearFIFO() {
-  volatile int *PS2_ptr = (int *)PS2_BASE;
-  int PS2_data = *PS2_ptr;
-  int RAVAIL = PS2_data>>16;
-  while(RAVAIL > 0){
-    PS2_data = *PS2_ptr;
-    RAVAIL = PS2_data>>16;
-  }
-}
+mouseData mData;
+mouseData prevmData;
 
-int updateMouse(mouseData *data) {
+
+void updateMouse() {
   volatile int *PS2_ptr = (int *)PS2_BASE;
   int PS2_data, RVALID;
   signed char inputData[3];
-  char buttons;
 
   int i = 0;
   while(!i){
@@ -28,7 +32,6 @@ int updateMouse(mouseData *data) {
     RVALID = PS2_data & 0x8000;
     if(RVALID){
       inputData[0] = PS2_data & 0xFF;
-      buttons = inputData[0] & 0xF;
       i++;
     }
   }
@@ -42,22 +45,23 @@ int updateMouse(mouseData *data) {
     }
   }
 
-  data->left = inputData[0] & 1;
-  data->middle = inputData[0] & 4;
-  data->right = inputData[0] & 2;
+  mData.left = inputData[0] & 1;
+  mData.middle = inputData[0] & 4;
+  mData.right = inputData[0] & 2;
 
-  data->x += inputData[1];
-  data->y -= inputData[2];
+  mData.x += inputData[1];
+  mData.y -= inputData[2];
 
-  if (data->x > MAX_X) data->x = MAX_X - 1;
-  if (data->y > MAX_Y) data->y = MAX_Y - 1;
+  if (mData.x >= MAX_X) mData.x = MAX_X - 1;
+  if (mData.y >= MAX_Y) mData.y = MAX_Y - 1;
 
-  if (data->x < 0) data->x = 0;
-  if (data->y < 0) data->y = 0;
+  if (mData.x < 0) mData.x = 0;
+  if (mData.y < 0) mData.y = 0;
   
 }
 
 void drawMouse(mouseData *data, short int colour) {
+    
     int x = data -> x;
     int y = data -> y;
 
@@ -82,17 +86,75 @@ void drawMouse(mouseData *data, short int colour) {
     
 }
 
-void intializeMouse(mouseData *data) {
-  volatile int * PS2_ptr = (int *)0xFF200100;
+void setA9stack(){
+  int stack,mode;
+  stack = 0xFFFFFFFF - 7;
+  mode = 0b11010010;
+  __asm__ volatile ("msr cpsr, %0":: "r"(mode));
+  __asm__ volatile ("mov sp, %0":: "r"(stack));
+
+  mode = 0b11010011;
+  __asm__ volatile("msr cpsr, %0":: "r"(mode));
+}
+
+void enableInterrupt(){
+  int status = 0b01010011;
+  __asm__ volatile("msr cpsr, %0":: "r"(status));
+}
+
+void configGIC(){
+  *((volatile int*) 0xFFFED84C) = 0x01000000;
+  *((volatile int*) 0xFFFED108) = 0x00008000;
+
+// all priority interupts enbaled
+  *((volatile int*) 0xFFFEC104) = 0xFFFF;
+
+  *((volatile int*) 0xFFFEC100) = 1;
+
+  *((volatile int*) 0xFFFED000) = 1;
+}
+
+void __attribute__ ((interrupt)) __cs3_isr_irq(void){
+  int interruptID = *((volatile int*) 0xFFFEC10C);
+
+  if(interruptID != 79) while(1);
+  prevmData = mData;
+  updateMouse();
+  if((mData.x >= BUTTON_X) && (mData.x < (BUTTON_X + 15)) && (mData.y >= BUTTON_Y) && (mData.y < (BUTTON_Y + 12))){
+    if(!prevmData.left && mData.left){
+      drawIndividualPixel(100,100,0xFFFF);
+    }
+  }
+
+  *((volatile int*) 0xFFFEC110) = interruptID;
+  return;
+}
+
+void __attribute__ ((interrupt)) __cs3_isr_undef(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_swi(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_pabort(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_dabort(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_fiq(void){while(1);}
+
+void intializeMouse() {
+  volatile int * PS2_ptr = (volatile int *)0xFF200100;
   int PS2_data, RVALID;
   char byte1 = 0, byte2 = 0;
 
-  data->x = MAX_X / 2;
-  data->y = MAX_Y / 2;
+  mData.x = MAX_X / 2;
+  mData.y = MAX_Y / 2;
 
-  data->left = false;
-  data->middle = false;
-  data->right = false;
+  mData.left = false;
+  mData.middle = false;
+  mData.right = false;
+
+  setA9stack();
+
+  configGIC();
 
   // PS/2 mouse needs to be reset (must be already plugged in)
   *(PS2_ptr) = 0xFF; // reset
@@ -132,4 +194,54 @@ void intializeMouse(mouseData *data) {
     if(RVALID)
       byte1 = PS2_data & 0xFF;
   }
+
+  *(PS2_ptr + 1) = 1;
+
+  enableInterrupt();
+}
+
+void drawButton(short int *colour){
+  int x = BUTTON_X;
+  int y = BUTTON_Y;
+  
+  for(int i = 0; i < 12; i++){
+    for(int j = 0; j < 15; j++){
+      drawIndividualPixel(x+j,y+i,colour[15*i + j]);
+    }
+  }
+}
+
+int main(){
+  short int switchButton[180] = {0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xD6DA, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0xD6DA, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA};
+
+    intializeMouse();
+    prevmData = mData;
+
+    vgaSetup();
+
+    
+
+    // Program loop
+    while(1) {
+        drawMouse(&prevmData, 0);
+
+        drawButton(switchButton);
+
+        drawMouse(&mData, 0xFFFF);
+
+        // Wait for Stuff
+        waitForVsync();
+    }
+    return 0;
 }
