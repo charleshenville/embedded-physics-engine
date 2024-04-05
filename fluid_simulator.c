@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdio.h>
+#include <assert.h>
+
+#define SW_BASE				    0xFF200040
 
 // =======================================================================================================
 //                                              DISPLAY UTILS
@@ -187,50 +190,56 @@ void drawBresenhamLine(int x0, int y0, int x1, int y1, short int colour){
 
 #define PS2_BASE        0xFF200100
 #define MOUSE_RADIUS    2
+#define BUTTON_X 301
+#define BUTTON_Y 4
 
+void buttonClickHandler();
 typedef struct mouseData {
   int x;
   int y;
   bool left, right, middle;
 } mouseData;
 
-void clearFIFO() {
-  volatile int *PS2_ptr = (int *)PS2_BASE;
-  int PS2_data = *PS2_ptr;
-  int RAVAIL = PS2_data>>16;
-  while(RAVAIL > 0){
-    PS2_data = *PS2_ptr;
-    RAVAIL = PS2_data>>16;
-  }
-}
+mouseData mData;
+mouseData prevmData;
 
-void updateMouse(mouseData *data) {
+void updateMouse() {
   volatile int *PS2_ptr = (int *)PS2_BASE;
   int PS2_data, RVALID;
-  char inputData;
-  PS2_data = *(PS2_ptr);  // read the Data register in the PS/2 port
-  inputData = PS2_data & 0xFF;
-  RVALID = PS2_data & 0x8000;  // extract the RVALID field
-  if (RVALID) {
-    data->left = inputData & 1;
-    data->middle = inputData & 4;
-    data->right = inputData & 2;
+  signed char inputData[3];
 
+  int i = 0;
+  while(!i){
     PS2_data = *(PS2_ptr);
-    inputData = PS2_data & 0xFF;
-    data->x += (2*inputData);
-
-    PS2_data = *(PS2_ptr);
-    inputData = PS2_data & 0xFF;
-    data->y += (2*inputData);
-
-    if (data->x >= MAX_X) data->x = MAX_X - 1;
-    if (data->y >= MAX_Y) data->y = MAX_Y - 1;
-
-    if (data->x < 0) data->x = 0;
-    if (data->y < 0) data->y = 0;
+    RVALID = PS2_data & 0x8000;
+    if(RVALID){
+      inputData[0] = PS2_data & 0xFF;
+      i++;
+    }
   }
-  clearFIFO();
+
+  while(i < 3){
+    PS2_data = *(PS2_ptr);
+    RVALID = PS2_data & 0x8000;
+    if(RVALID){
+      inputData[i] = PS2_data & 0xFF;
+      i++;
+    }
+  }
+
+  mData.left = inputData[0] & 1;
+  mData.middle = inputData[0] & 4;
+  mData.right = inputData[0] & 2;
+
+  mData.x += inputData[1];
+  mData.y -= inputData[2];
+
+  if (mData.x >= MAX_X) mData.x = MAX_X - 1;
+  if (mData.y >= MAX_Y) mData.y = MAX_Y - 1;
+
+  if (mData.x < 0) mData.x = 0;
+  if (mData.y < 0) mData.y = 0;
+  
 }
 
 void drawMouse(mouseData *data, short int colour) {
@@ -249,19 +258,153 @@ void drawMouse(mouseData *data, short int colour) {
         drawIndividualPixel(x + MOUSE_RADIUS, y + i, colour);
         drawIndividualPixel(x - MOUSE_RADIUS, y + i, colour);
     }
-
+    if(data -> left){
+      for(int i = -1; i < 2; i++) {
+        for(int j = -1; j < 2; j++){
+          drawIndividualPixel(x + i, y+j, colour);
+        }
+      }
+    }
+    
 }
 
-void intializeMouse(mouseData *data) {
-  volatile int *PS2_ptr = (int *)PS2_BASE;
-  *(PS2_ptr) = 0xFF;  // reset
+void setA9stack(){
+  int stack,mode;
+  stack = 0xFFFFFFFF - 7;
+  mode = 0b11010010;
+  __asm__ volatile ("msr cpsr, %0":: "r"(mode));
+  __asm__ volatile ("mov sp, %0":: "r"(stack));
 
-  data->x = MAX_X / 2;
-  data->y = MAX_Y / 2;
+  mode = 0b11010011;
+  __asm__ volatile("msr cpsr, %0":: "r"(mode));
+}
 
-  data->left = false;
-  data->middle = false;
-  data->right = false;
+void enableInterrupt(){
+  int status = 0b01010011;
+  __asm__ volatile("msr cpsr, %0":: "r"(status));
+}
+
+void configGIC(){
+  *((volatile int*) 0xFFFED84C) = 0x01000000;
+  *((volatile int*) 0xFFFED108) = 0x00008000;
+
+// all priority interupts enbaled
+  *((volatile int*) 0xFFFEC104) = 0xFFFF;
+
+  *((volatile int*) 0xFFFEC100) = 1;
+
+  *((volatile int*) 0xFFFED000) = 1;
+}
+
+void __attribute__ ((interrupt)) __cs3_isr_irq(void){
+  int interruptID = *((volatile int*) 0xFFFEC10C);
+
+  if(interruptID != 79) while(1);
+    //   prevmData = mData;
+  updateMouse();
+  if((mData.x >= BUTTON_X) && (mData.x < (BUTTON_X + 15)) && (mData.y >= BUTTON_Y) && (mData.y < (BUTTON_Y + 12))){
+    if(!prevmData.left && mData.left){
+      buttonClickHandler();
+    }
+  }
+
+  *((volatile int*) 0xFFFEC110) = interruptID;
+  return;
+}
+
+void __attribute__ ((interrupt)) __cs3_isr_undef(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_swi(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_pabort(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_dabort(void){while(1);}
+
+void __attribute__ ((interrupt)) __cs3_isr_fiq(void){while(1);}
+
+void intializeMouse() {
+  volatile int * PS2_ptr = (volatile int *)0xFF200100;
+  int PS2_data, RVALID;
+  char byte1 = 0, byte2 = 0;
+
+  mData.x = MAX_X / 2;
+  mData.y = MAX_Y / 2;
+
+  mData.left = false;
+  mData.middle = false;
+  mData.right = false;
+
+  setA9stack();
+
+  configGIC();
+
+  // PS/2 mouse needs to be reset (must be already plugged in)
+  *(PS2_ptr) = 0xFF; // reset
+  while((byte2 != (char) 0xAA) || (byte1 != (char)0x00)){
+    PS2_data = *(PS2_ptr);
+    RVALID = PS2_data & 0x8000;
+    if(RVALID){
+      byte2 = byte1;
+      byte1 = PS2_data & 0xFF;
+    }
+  }
+
+  *(PS2_ptr) = 0xF3;
+  byte1 = 0;
+  while(byte1 != (char)0xFA){
+    PS2_data = *(PS2_ptr);
+    RVALID = PS2_data & 0x8000;
+    if(RVALID){
+      byte1 = PS2_data & 0xFF;
+    }
+  }
+
+    //SAMPLE RATE
+  *(PS2_ptr) = 40;
+  byte1 = 0;
+  while(byte1 != (char)0xFA){
+    PS2_data = *(PS2_ptr);
+    RVALID = PS2_data & 0x8000;
+    if(RVALID)
+      byte1 = PS2_data & 0xFF;
+  }
+
+  *(PS2_ptr) = 0xF4;
+  byte1 = 0;
+  while(byte1 != (char)0xFA){
+    PS2_data = *(PS2_ptr);
+    RVALID = PS2_data & 0x8000;
+    if(RVALID)
+      byte1 = PS2_data & 0xFF;
+  }
+
+  *(PS2_ptr + 1) = 1;
+
+  enableInterrupt();
+}
+
+short int switchButton[180] = {0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xD6DA, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xF800, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xF800, 0xF800, 0xF800, 0xF800, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0x001F, 0xD6DA, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0x001F, 0x001F, 0x001F, 0x001F, 0x001F, 0x001F, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 
+                                 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA, 0xD6DA};
+
+void drawButton(){
+  int x = BUTTON_X;
+  int y = BUTTON_Y;
+  
+  for(int i = 0; i < 12; i++){
+    for(int j = 0; j < 15; j++){
+      drawIndividualPixel(x+j,y+i,switchButton[15*i + j]);
+    }
+  }
 }
 
 // =======================================================================================================
@@ -270,7 +413,7 @@ void intializeMouse(mouseData *data) {
 
 // -g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx
 
-#define NUM_PARTICLES       48 // 192, 48, 12
+#define NUM_PARTICLES       150 // 192, 48, 12
 
 #define WATER_COLOUR        27743
 #define WATER_HUE           0.62
@@ -280,22 +423,42 @@ void intializeMouse(mouseData *data) {
 #define PRESSURE_COLUMNS    24
 #define PRESSURE_ROWS       32
 
-#define G                   9.81
-#define K                   20.0
-#define PARTICLE_MASS       1
-#define SPF                 0.01 // Seconds Per Frame
-#define ELASTICITY          0.3 // 0 to 1
-#define VELOCITY_COLOUR_SENSITIVITY 50.0
-#define VISCOSITY           0.2
-#define ROOT_TWO_SCALE      1.42
+#define INIT_VAR            9
 
-#define TUG_ACCELERATION    15.0
+#define G                   6.0
+#define K                   7.5
+#define H_H                 4.0
+#define PARTICLE_MASS       0.1
+#define SPF                 0.01 // Seconds Per Frame
+#define ELASTICITY          0.25 // 0 to 1
+#define VELOCITY_COLOUR_SENSITIVITY 20.0
+#define VISCOSITY           1.0
+#define ROOT_TWO_SCALE      1.414
+
+#define TUG_ACCELERATION    10.0
 #define TUG_VELOCITY        0.001
 
-#define M_PER_PX            0.013333333
-#define PX_PER_M            75.0
+#define M_PER_PX            0.02
+#define PX_PER_M            50.0
+#define MOUSE_A_MAG         1000.0
 
-#define DENSITY_RESTING     200.0
+#define DENSITY_RESTING     2000.0
+
+// use malloc to create all of these instread of static
+#define NUM_BUCKETS 32
+#define BUCKET_WIDTH (MAX_X/NUM_BUCKETS)
+#define HALF_BUCKET_WIDTH (BUCKET_WIDTH>>1)
+
+// for iteration almost exclusively.
+int numElementsInBucket_even[NUM_BUCKETS] = {0};
+int numElementsInBucket_odd[NUM_BUCKETS] = {0};
+int neighbourBucketIndexes[3] = {0};
+
+int buckets_even[NUM_BUCKETS][NUM_PARTICLES];
+int buckets_odd[NUM_BUCKETS][NUM_PARTICLES];
+int lastSeen[NUM_PARTICLES][NUM_PARTICLES];
+int lastSeen2[NUM_PARTICLES][NUM_PARTICLES];
+int timeStep = 0;
 	
 float h; // Spacing parameter between fluids in the simulation
 int hpx; // h but in px
@@ -322,6 +485,7 @@ typedef struct Particle {
     float neighbourDYs[NUM_PARTICLES];
     float neighbourDistances[NUM_PARTICLES];
     short int colour;
+    int bucketIndexes[3];
 
 } Particle;
 
@@ -340,9 +504,11 @@ void initParticles() {
     int initY = stepY/2;
 
     hpx = (stepX + stepY) / 2.0;
-    h = M_PER_PX * (stepX + stepY) / 2.0;
+    // h = M_PER_PX * (stepX + stepY) / 2.0;
+    h = M_PER_PX * H_H;
 
-    alpha = 5.0/(14.0*M_PI*h*h);
+    // alpha = 5.0/(14.0*M_PI*h*h);
+    alpha = 5.0/(14.0*3.14159265*h*h);
     inv_rho_naught = 1.0/(float)DENSITY_RESTING;
     nu = h*h/100.0;
     
@@ -356,6 +522,10 @@ void initParticles() {
 	
     for (int i = 0; i < NUM_PARTICLES; i++) {
 		
+        for(int j = 0; j < NUM_PARTICLES; j++){
+            lastSeen[i][j] = -1;
+            lastSeen2[i][j] = -1;
+        }
 		srand(i);
         if(xStepCount >= amtColumns) {
             xStepCount = 0;
@@ -364,8 +534,8 @@ void initParticles() {
         if(yStepCount >= amtRows) {
             yStepCount = 0;
         }
-        allParticles[i].x = initX + xStepCount*stepX + (rand() % 3) - 1;
-        allParticles[i].y = initY + yStepCount*stepY + (rand() % 3) - 1;
+        allParticles[i].x = initX + xStepCount*stepX + (rand() % INIT_VAR) - (INIT_VAR>>1);
+        allParticles[i].y = initY + yStepCount*stepY + (rand() % INIT_VAR) - (INIT_VAR>>1);
         allParticles[i].vx = 0;
         allParticles[i].vy = 0;
         allParticles[i].colour = WATER_COLOUR;
@@ -394,9 +564,6 @@ void drawParticles() {
 // https://cg.informatik.uni-freiburg.de/course_notes/sim_10_sph.pdf
 
 void stepSPHPositions(int i) {
-
-    allEraseParticles[i].x = allParticles[i].x;
-    allEraseParticles[i].y = allParticles[i].y;
 
     allParticles[i].pX += allParticles[i].vx * SPF;
     allParticles[i].pY += allParticles[i].vy * SPF;
@@ -440,10 +607,21 @@ void doVelocityStepCheck(int i) {
     }
 }
 
+float floatAbs(float in){
+    return in > 0 ? in : -in;
+}
 void stepSPHVelocities(int i) {
     
-    allParticles[i].vx += allParticles[i].ax*SPF;
-    allParticles[i].vy += allParticles[i].ay*SPF;
+    if(floatAbs(allParticles[i].vx) < VELOCITY_COLOUR_SENSITIVITY/2){
+        allParticles[i].vx += allParticles[i].ax*SPF;
+    } else if ((allParticles[i].vx > 0) != (allParticles[i].ax > 0)) {
+        allParticles[i].vx += allParticles[i].ax*SPF;
+    }
+    if(floatAbs(allParticles[i].vy) < VELOCITY_COLOUR_SENSITIVITY/2){
+        allParticles[i].vy += allParticles[i].ay*SPF;
+    } else if ((allParticles[i].vy > 0) != (allParticles[i].ay > 0)) {
+        allParticles[i].vy += allParticles[i].ay*SPF;
+    }
     allParticles[i].colour = hueToRGB565(WATER_HUE-sqrt(allParticles[i].vx*allParticles[i].vx + allParticles[i].vy*allParticles[i].vy)/VELOCITY_COLOUR_SENSITIVITY);
 
 }
@@ -464,133 +642,250 @@ void calculateSPHAccelerations(int i) {
 
     // doVelocityStepCheck(i);
     // if (allParticles[i].ax != 0 || allParticles[i].ay != G) return;
+    for(int nbIdx = 0; nbIdx < 3; nbIdx++){
 
-    for (int j = 0; j < NUM_PARTICLES; j++) {
+        int buck = allParticles[i].bucketIndexes[nbIdx];
+        if (buck<0 || buck>=NUM_BUCKETS) break;
 
-        if (!allParticles[i].neighbours[j]) continue; // Dont check non-neighbours
-        if (allParticles[i].neighbourDistances[j] == 0) continue; // Everything goes to zero if no distance
-
-        q = allParticles[i].gradQ[j];
-        if(!q) continue;
-
-        dx = allParticles[i].neighbourDXs[j];
-        dy = allParticles[i].neighbourDYs[j];
-
-        x_ij = allParticles[i].neighbourDistances[j];
-        x_ij2 = x_ij*x_ij;
-
-        // if(q < 1){
-        //     q = - 3 * pow((2-q), 2) + 12 * pow((1-q), 2);
-        // } else if (q < 2) {
-        //     q = - 3 * pow((2-q), 2);
-        // } else {
-        //     continue; // q is zero so save calcs by continuing
-        // }
+        for (int pos_j = 0; pos_j < numElementsInBucket_even[buck]; pos_j++) {
         
-        GRADW_ijx = alpha * dx * q / (x_ij * h);
-        GRADW_ijy = alpha * dy * q / (x_ij * h);
+            int j = buckets_even[buck][pos_j];
+            // int j = buckets_odd[allParticles[i].bucketIndex][pos_j];
 
-        // Pressure Acceleration
+            if (lastSeen[i][j] == timeStep || lastSeen[j][i] == timeStep) continue;
+            lastSeen[i][j] = timeStep;
+            lastSeen[j][i] = timeStep;
 
-        inv_rho_j = 1/allParticles[j].density;
-        pressureRatio_j = allParticles[j].pressure * inv_rho_j * inv_rho_j;
-        allParticles[i].ax -= (pressureRatio_i + pressureRatio_j) * GRADW_ijx;
-        allParticles[i].ay -= (pressureRatio_i + pressureRatio_j) * GRADW_ijy;
+            if (!allParticles[i].neighbours[j]) continue; // Dont check non-neighbours
+            if (allParticles[i].neighbourDistances[j] == 0) continue; // Everything goes to zero if no distance
 
-        // Viscosity Acceleration
+            q = allParticles[i].gradQ[j];
+            if(!q) continue;
 
-        dvx = allParticles[i].vx - allParticles[j].vx;
-        dvy = allParticles[i].vy - allParticles[j].vy;
+            dx = allParticles[i].neighbourDXs[j];
+            dy = allParticles[i].neighbourDYs[j];
 
-        viscosScale = VISCOSITY * inv_rho_j * (dx*GRADW_ijx + dy*GRADW_ijy) / (x_ij2+nu);
-        allParticles[i].ax += viscosScale * dvx;
-        allParticles[i].ay += viscosScale * dvy;
+            x_ij = allParticles[i].neighbourDistances[j];
+            x_ij2 = x_ij*x_ij;
 
+            // if(q < 1){
+            //     q = - 3 * pow((2-q), 2) + 12 * pow((1-q), 2);
+            // } else if (q < 2) {
+            //     q = - 3 * pow((2-q), 2);
+            // } else {
+            //     continue; // q is zero so save calcs by continuing
+            // }
+            
+            GRADW_ijx = alpha * dx * q / (x_ij * h);
+            GRADW_ijy = alpha * dy * q / (x_ij * h);
+
+            // Pressure Acceleration
+
+            inv_rho_j = 1/allParticles[j].density;
+            pressureRatio_j = allParticles[j].pressure * inv_rho_j * inv_rho_j;
+            allParticles[i].ax -= (pressureRatio_i + pressureRatio_j) * GRADW_ijx;
+            allParticles[i].ay -= (pressureRatio_i + pressureRatio_j) * GRADW_ijy;
+
+            // Viscosity Acceleration
+
+            dvx = allParticles[i].vx - allParticles[j].vx;
+            dvy = allParticles[i].vy - allParticles[j].vy;
+
+            viscosScale = VISCOSITY * inv_rho_j * (dx*GRADW_ijx + dy*GRADW_ijy) / (x_ij2+nu);
+            allParticles[i].ax += viscosScale * dvx;
+            allParticles[i].ay += viscosScale * dvy;
+
+        }
     }
 
-}
+    // Mouse Acceleration
+    if(!mData.left) return;
+    // printf("HERE");
+    dx = (float)allParticles[i].x - (float)mData.x;
+    dy = (float)allParticles[i].y - (float)mData.y;
+    float mag = sqrt(dx*dx+dy*dy);
+    if (mag < 2*h*PX_PER_M) {
+        allParticles[i].ax += MOUSE_A_MAG * dx/(mag*mag);
+        allParticles[i].ay += MOUSE_A_MAG * dy/(mag*mag);
+    }
 
-void timeStepSPHApproximation() {
+} 
 
-    for (int i = 0; i < NUM_PARTICLES; i++) {
+void timeStepSPHApproximation(int i, int j) {
+        
+    // 1. Find nearest neighbours j for particle i
+    // 2. Calculate Density and Pressure at every particle i
 
-        // 1. Find nearest neighbours j for particle i
-        // 2. Calculate Density and Pressure at every particle i
+    float dx, dy;
+    float x_ij, q, rho;
+    float fp, sp, gradQ;
 
-        float dx, dy;
-        float x_ij, q, rho;
-        float fp, sp, gradQ;
-		
-        for (int j = i + 1; j < NUM_PARTICLES; j++) {
-			
-            dx = allParticles[i].pX - allParticles[j].pX;
-            dy = allParticles[i].pY - allParticles[j].pY;
-            x_ij = sqrt(dx*dx+dy*dy);
-			
-            if (x_ij<ROOT_TWO_SCALE*h) {
+    dx = allParticles[i].pX - allParticles[j].pX;
+    dy = allParticles[i].pY - allParticles[j].pY;
+    x_ij = sqrt(dx*dx+dy*dy);
+    
+    if (x_ij<ROOT_TWO_SCALE*h) {
 
-                allParticles[i].neighbourDXs[j] = dx;
-                allParticles[i].neighbourDYs[j] = dy;
-                allParticles[i].neighbourDistances[j] = x_ij;
+        allParticles[i].neighbourDXs[j] = dx;
+        allParticles[i].neighbourDYs[j] = dy;
+        allParticles[i].neighbourDistances[j] = x_ij;
 
-                allParticles[j].neighbourDXs[i] = -dx;
-                allParticles[j].neighbourDYs[i] = -dy;
-                allParticles[j].neighbourDistances[i] = x_ij;
+        allParticles[j].neighbourDXs[i] = -dx;
+        allParticles[j].neighbourDYs[i] = -dy;
+        allParticles[j].neighbourDistances[i] = x_ij;
 
-                allParticles[i].neighbours[j] = true;
-                allParticles[j].neighbours[i] = true;
+        allParticles[i].neighbours[j] = true;
+        allParticles[j].neighbours[i] = true;
 
-                q = x_ij/h;
+        q = x_ij/h;
 
-                if(q < 1){
-                    fp = pow((2-q), 2);
-                    sp = pow((1-q), 2);
+        if(q < 1){
+            fp = pow((2-q), 2);
+            sp = pow((1-q), 2);
 
-                    gradQ = -3 * fp + 12 * sp;
-                    allParticles[i].gradQ[j] = gradQ;
-                    allParticles[j].gradQ[i] = gradQ;
+            gradQ = -3 * fp + 12 * sp;
+            allParticles[i].gradQ[j] = gradQ;
+            allParticles[j].gradQ[i] = gradQ;
 
-                    q = fp*(2-q) - 4 * sp*(1-q);
-                } else if (q < 2) {
-                    fp = pow((2-q), 2);
+            q = fp*(2-q) - 4 * sp*(1-q);
+        } else if (q < 2) {
+            fp = pow((2-q), 2);
 
-                    gradQ = -3 * fp;
-                    allParticles[i].gradQ[j] = gradQ;
-                    allParticles[j].gradQ[i] = gradQ;
+            gradQ = -3 * fp;
+            allParticles[i].gradQ[j] = gradQ;
+            allParticles[j].gradQ[i] = gradQ;
 
-                    q = fp*(2-q);
-                } else {
-                    allParticles[i].gradQ[j] = 0;
-                    allParticles[j].gradQ[i] = 0;
-                    continue; // q is zero so save calcs by continuing
-                }
-
-                
-                rho = alpha*q;
-                //printf("\nrho: %f", rho);
-                allParticles[i].density += rho;
-                allParticles[j].density += rho;
-
-            } else {
-                allParticles[i].neighbours[j] = false;
-                allParticles[j].neighbours[i] = false;
-            }
-			
+            q = fp*(2-q);
+        } else {
+            allParticles[i].gradQ[j] = 0;
+            allParticles[j].gradQ[i] = 0;
+            return; // q is zero so save calcs by continuing
         }
 
-        allParticles[i].pressure = K * pow((allParticles[i].density*inv_rho_naught), 7) - K;
+        
+        rho = alpha*q;
+        //printf("\nrho: %f", rho);
+        allParticles[i].density += rho;
+        allParticles[j].density += rho;
 
-        // 3. Calculate Accelearations (Approx)
-        calculateSPHAccelerations(i);
-
-        // 4. Step Velocities and then positions.
-        doVelocityStepCheck(i);
-        stepSPHVelocities(i);
-        stepSPHPositions(i);
-
+    } else {
+        allParticles[i].neighbours[j] = false;
+        allParticles[j].neighbours[i] = false;
     }
 
 }
+
+void generalParticleUpdate(int i) {
+    
+    allParticles[i].pressure = K * pow((allParticles[i].density*inv_rho_naught), 7) - K;
+
+    // 3. Calculate Accelearations (Approx)
+    calculateSPHAccelerations(i);
+
+    // 4. Step Velocities and then positions.
+    doVelocityStepCheck(i);
+    stepSPHVelocities(i);
+    stepSPHPositions(i);
+
+}
+
+void timeStepBucketwiseParticleUpdate() {
+    
+    // clean buckets
+    for (int bucket = 0; bucket < NUM_BUCKETS; bucket++) {
+        numElementsInBucket_even[bucket] = 0;
+        // numElementsInBucket_odd[bucket] = 0;
+    }
+
+    // Populate all buckets with particle indicies appropriately
+    for (int i = 0; i < NUM_PARTICLES; i++) {
+
+        allEraseParticles[i].x = allParticles[i].x;
+        allEraseParticles[i].y = allParticles[i].y;
+
+        int evenBucket = (allParticles[i].x/BUCKET_WIDTH);
+        // assert(evenBucket >= 0 && evenBucket < NUM_BUCKETS);
+        buckets_even[evenBucket][numElementsInBucket_even[evenBucket]] = i;
+        numElementsInBucket_even[evenBucket]++;
+
+        // int oddBucket = ((allParticles[i].x+HALF_BUCKET_WIDTH)/BUCKET_WIDTH);
+        // if(oddBucket < NUM_BUCKETS) {
+        //     buckets_odd[oddBucket][numElementsInBucket_even[oddBucket]] = i;
+        //     numElementsInBucket_odd[oddBucket]++;
+        // }
+
+    }
+
+    for (int bucket = 0; bucket < NUM_BUCKETS; bucket++) {
+
+        if(bucket == 0){
+            neighbourBucketIndexes[0] = bucket;
+            neighbourBucketIndexes[1] = bucket+1;
+            neighbourBucketIndexes[2] = -1;
+        } else if(bucket == (NUM_BUCKETS - 1)) {
+            neighbourBucketIndexes[0] = bucket-1;
+            neighbourBucketIndexes[1] = bucket;
+            neighbourBucketIndexes[2] = -1;
+        } else {
+            neighbourBucketIndexes[0] = bucket-1;
+            neighbourBucketIndexes[1] = bucket;
+            neighbourBucketIndexes[2] = bucket+1;
+        }
+        
+        // if (bucket != (NUM_BUCKETS-1)) for (int pos_i = 0; pos_i < numElementsInBucket_odd[bucket]; pos_i++) {
+        //     int i = buckets_odd[bucket][pos_i];
+        //     for (int pos_j = 0; pos_j < numElementsInBucket_odd[bucket]; pos_j++) {
+
+        //         int j = buckets_odd[bucket][pos_j];
+        //         // if(j<(i+1)) continue;
+
+        //         lastSeen[i][j] = timeStep;
+
+        //         // Call helper function to actually process i/j collision
+        //         allParticles[i].bucketIndex = bucket;
+        //         timeStepSPHApproximation(i,j);
+
+        //     }
+        //     // generalParticleUpdate(i, numElementsInBucket_odd[bucket]);
+        // }
+
+        for (int pos_i = 0; pos_i < numElementsInBucket_even[bucket]; pos_i++) {
+            int i = buckets_even[bucket][pos_i];
+
+            for(int nbIdx = 0; nbIdx < 3; nbIdx++){
+                
+                int buck = neighbourBucketIndexes[nbIdx];
+                allParticles[i].bucketIndexes[nbIdx] = buck;
+
+                if (buck<0 || buck>=NUM_BUCKETS) break;
+
+                for (int pos_j = 0; pos_j < numElementsInBucket_even[buck]; pos_j++) {
+
+                    int j = buckets_even[buck][pos_j];
+                    // if(j<(i+1)) continue;
+
+                    if (lastSeen[i][j] == timeStep || lastSeen[j][i] == timeStep) continue;
+                    lastSeen[i][j] = timeStep; 
+                    lastSeen[j][i] = timeStep; 
+
+                    // Call helper function to actually process i/j collision
+                    timeStepSPHApproximation(i,j);
+
+                }
+
+            }
+            
+            timeStep++;
+            generalParticleUpdate(i);
+            timeStep--;
+        }
+
+        
+    }
+    timeStep++;
+}
+
+
 
 // =======================================================================================================
 //                                             RIGID BODY UTILS
@@ -607,6 +902,7 @@ void timeStepSPHApproximation() {
 #define M_PER_PX_RB         1.0
 
 #define VERTICIES_PER_BODY  4
+#define MAX_EXTERNAL_FORCES (VERTICIES_PER_BODY + NUM_BODIES)
 #define VERT_VARIANCE       30
 #define VELOCITY_COLOUR_SENSITIVITY_RB 100.0
 
@@ -643,6 +939,10 @@ typedef struct RigidBody {
     float vDistances [VERTICIES_PER_BODY];
     Vector2D v;
     Vector2D a;
+    int minPX;
+    int minPY;
+    int maxPX;
+    int maxPY;
     float cx, cy;
     float I;
     float mass;
@@ -651,97 +951,353 @@ typedef struct RigidBody {
     float omega;
     float alpha;
 
-    ExternalForce extForces [VERTICIES_PER_BODY];
+    bool collidedLastStep;
+    ExternalForce extForces [MAX_EXTERNAL_FORCES];
 
     short int colour;
 
 } RigidBody;
 
 short int collisionMap [MAX_X][MAX_Y];
+bool bookMarkedCollisions[NUM_BODIES][NUM_BODIES];
 DrawBody eraseRBs [NUM_BODIES];
 RigidBody allBodies [NUM_BODIES];
 
-void fillCollisionSegment(int x0, int y0, int x1, int y1, int scale) {
-	
-	bool isSteep = abs(x0-x1) < abs(y0-y1);
-    bool isAdditive = x0>x1;
-    int xGoVal = -1;
-    int yStopVal = -1;
+float dotProd2D(Vector2D * a, Vector2D * b){
+    return a->x * b->x + a->y * b->y;
+}
+float magnitudeCrossProd2D(Vector2D * a, Vector2D * b){
+    return a->x * b->y - a->y * b->x;
+}
+float floatMin(float a, float b){
+    return a < b? a : b;
+}
+// Check if rigid body I has coillided with any rigid body j
+// Credit to the SAT. (Seperating Axis Theorem).
+void checkSATInterBodyCollision(int i){
+    
+    float dy, dx;
+    float maxiDot, miniDot;
+    float maxjDot, minjDot;
 
-	if(isSteep){
-		swap(&x0, &y0);
-		swap(&x1, &y1);
-	}
-	if(x0>x1){
-		swap(&x0, &x1);
-		swap(&y0, &y1);
-	}
-	
-	int dx = x1 - x0;
-	int dy = abs(y1 - y0);
-	int error = -dx/2;
-	
-	int moveY = y1>y0 ? 1 : -1;
-	
-	int y = y0;
-	int x = x0;
-	
-	while(x <= x1) {
-		
-        if ((isSteep && (xGoVal != y)) || (!isSteep && (xGoVal != x))){
-            if (isSteep) {xGoVal = y; yStopVal = x;}
-            else {xGoVal = x; yStopVal = y;}
+    int forceIndex = VERTICIES_PER_BODY - 1;
+
+    for(int j = 0; j < NUM_BODIES; j++){
+
+        forceIndex += 1;
+        if (j==i) continue;
+        if (bookMarkedCollisions[i][j]) continue;
+        // Hold the minimum found sep value between bodies i and j.
+        float minSep = 1.0e38;
+        int testiIdxMin, testjIdxMin, testiIdxMax, testjIdxMax;
+        int minSepEdgeBodyIdx = 0;
+        int minSepVertBodyIdx = 0;
+        int minSepBodyVertIdx = 0;
+        Vector2D minEdgeResponsible, normMinEdgeResponsible;
+
+        bool hasCollided = true;
+
+        // Loop over edge normals of both shapes.
+        for(int vertIdx = 0; vertIdx < (VERTICIES_PER_BODY<<1); vertIdx++) {
             
-            for (int collY = yStopVal; collY >= 0; collY--){
-                if(isAdditive) {
-                    if(collisionMap[xGoVal][collY] == scale) break;
-                    collisionMap[xGoVal][collY] += scale;
-                }
-                else {
-                    if(collisionMap[xGoVal][collY] == -scale) break;
-                    collisionMap[xGoVal][collY] -= scale;
-                }
+            int startIdxi = (vertIdx % 4)? (vertIdx % 4)-1 : VERTICIES_PER_BODY - 1;
+            int endIdxi = (vertIdx % 4);
+            
+            // dx and dy here define our current edge on either i or j (and the vector parallel to it).
+            if(vertIdx < VERTICIES_PER_BODY){
+                dx = allBodies[i].xs[endIdxi] - allBodies[i].xs[startIdxi];
+                dy = allBodies[i].ys[endIdxi] - allBodies[i].ys[startIdxi];
+            } else {
+                dx = allBodies[j].xs[endIdxi] - allBodies[j].xs[startIdxi];
+                dy = allBodies[j].ys[endIdxi] - allBodies[j].ys[startIdxi];
             }
+
+            Vector2D normalVec, cVec;
+            float testDot;
+            normalVec.x = -dy;
+            normalVec.y = dx;
+
+            miniDot = 1.0e38;
+            minjDot = 1.0e38;
+            maxiDot = -1.0e38;
+            maxjDot = -1.0e38;
+
+            for(int vertIdxi = 0; vertIdxi < VERTICIES_PER_BODY; vertIdxi++) {
+                cVec.x = allBodies[i].xs[vertIdxi];
+                cVec.y = allBodies[i].ys[vertIdxi];
+                testDot = dotProd2D(&normalVec, &cVec);
+                if(testDot < miniDot){miniDot = testDot; testiIdxMin = vertIdxi;}
+                if(testDot > maxiDot){maxiDot = testDot; testiIdxMax = vertIdxi;}
+            }
+            for(int vertIdxj = 0; vertIdxj < VERTICIES_PER_BODY; vertIdxj++) {
+                cVec.x = allBodies[j].xs[vertIdxj];
+                cVec.y = allBodies[j].ys[vertIdxj];
+                testDot = dotProd2D(&normalVec, &cVec);
+                if(testDot < minjDot){minjDot = testDot; testjIdxMin = vertIdxj;}
+                if(testDot > maxjDot){maxjDot = testDot; testiIdxMax = vertIdxj;}
+            }
+
+            // Test to see if we have found a seperating axis
+            if(miniDot>=maxjDot || maxiDot<=minjDot) {hasCollided = false; break;}
+
+            // If we are still here then we have not found the seperating axis and can still collide.
+            float seperation = -floatMin(maxiDot-minjDot, maxjDot-miniDot);
+            // printf("SEP: %f\n\n", seperation);
+            if (seperation <= minSep) {
+                // printf("we haere\n");
+                minSep = seperation;
+                minEdgeResponsible.x = dx;
+                minEdgeResponsible.y = dy;
+                float magPos = sqrt(dx*dx+dy*dy);
+                normMinEdgeResponsible.x = dy/magPos;
+                normMinEdgeResponsible.y = dx/magPos;
+
+                minSepEdgeBodyIdx = vertIdx < VERTICIES_PER_BODY ? i : j;
+                minSepVertBodyIdx = minSepEdgeBodyIdx == i ? j : i;
+                
+                // Which vert of the vert body is responsible:
+                if(maxiDot-minjDot < maxjDot-miniDot) {
+                    if (minSepVertBodyIdx==i){
+                        minSepBodyVertIdx = testiIdxMax;
+                    } else {
+                        minSepBodyVertIdx = testjIdxMin;
+                    }
+                } else {
+                    if (minSepVertBodyIdx==i){
+                        minSepBodyVertIdx = testiIdxMin;
+                    } else {
+                        minSepBodyVertIdx = testjIdxMax;
+                    }
+                }
+
+            }
+        }
+
+        if (hasCollided && !bookMarkedCollisions[i][j]) {
             
-        }
-		
-		error = error + dy;
-		if (error > 0){
-			y = y + moveY;
-			error = error - dx;
-		}
-		
-		x++;
-		
-	}
+            bookMarkedCollisions[minSepVertBodyIdx][minSepEdgeBodyIdx] = true;
+            bookMarkedCollisions[minSepEdgeBodyIdx][minSepVertBodyIdx] = true;
 
-}
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].isActive = true;
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.x = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepVertBodyIdx].a.x;
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.y = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepVertBodyIdx].a.y;
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].r.x = allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx] - allBodies[minSepVertBodyIdx].cx;
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].r.y = allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx] - allBodies[minSepVertBodyIdx].cy;
 
-void clearCollisionMap() {
-    for (int x = 0; x < MAX_X; x++){
-        for (int y = 0; y < MAX_Y; y++){
-            collisionMap[x][y] = 0;
+            if(!allBodies[minSepVertBodyIdx].collidedLastStep){
+                float velocityVecMag = sqrt(pow(allBodies[minSepVertBodyIdx].v.x, 2) + pow(allBodies[minSepVertBodyIdx].v.x, 2));
+                float dotMag = dotProd2D(&allBodies[minSepVertBodyIdx].v, &normMinEdgeResponsible);
+                // dotMag = dotMag < 0 ? dotMag : -dotMag;
+                allBodies[minSepVertBodyIdx].v.x = -(allBodies[minSepEdgeBodyIdx].mass / allBodies[minSepVertBodyIdx].mass) * dotMag * normMinEdgeResponsible.x * ELASTICITY_RB;
+                allBodies[minSepVertBodyIdx].v.y = -(allBodies[minSepEdgeBodyIdx].mass / allBodies[minSepVertBodyIdx].mass) * dotMag * normMinEdgeResponsible.y * ELASTICITY_RB;
+            }
+
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].isActive = true;
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force.x = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepEdgeBodyIdx].a.x;
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force.y = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepEdgeBodyIdx].a.y;
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].r.x = allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx] - allBodies[minSepEdgeBodyIdx].cx;
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].r.y = allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx] - allBodies[minSepEdgeBodyIdx].cy;
+            
+            if(!allBodies[minSepEdgeBodyIdx].collidedLastStep){
+                allBodies[minSepEdgeBodyIdx].v.x *= -(allBodies[minSepVertBodyIdx].mass / allBodies[minSepEdgeBodyIdx].mass) * ELASTICITY_RB;
+                allBodies[minSepEdgeBodyIdx].v.y *= -(allBodies[minSepVertBodyIdx].mass / allBodies[minSepEdgeBodyIdx].mass) * ELASTICITY_RB;
+            }
+
+            // printf("Collision detected between bodies %d ", minSepEdgeBodyIdx);
+            // printf("and %d\n", minSepVertBodyIdx);
+
+            allBodies[minSepVertBodyIdx].collidedLastStep = true;
+            allBodies[minSepEdgeBodyIdx].collidedLastStep = true;
+
+        } else if (!hasCollided) {
+            // printf("ELSE\n");
+            allBodies[minSepVertBodyIdx].collidedLastStep = false;
+            allBodies[minSepEdgeBodyIdx].collidedLastStep = false;
+
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].isActive = false;
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].isActive = false;
         }
+
     }
 }
 
-void updateCollisionMap(int i) {
-    int cScale = MAX_Y - (PX_PER_M_RB * allBodies[i].cy);
-    // int cScale = 1;
-    for (int j = 1; j < VERTICIES_PER_BODY; j++){
-        fillCollisionSegment(allBodies[i].xs[j-1], allBodies[i].ys[j-1], allBodies[i].xs[j], allBodies[i].ys[j], cScale);
-    }
-    fillCollisionSegment(allBodies[i].xs[VERTICIES_PER_BODY-1], allBodies[i].ys[VERTICIES_PER_BODY-1], allBodies[i].xs[0], allBodies[i].ys[0], cScale);
-}
+// int checkInterBodyCollision(int i, int k, int forceIndex){
+//     //given edge k of body i
 
-void visualizeCollisionMap(){
-    for (int x = 0; x < (MAX_X); x++){
-        for (int y = 0; y < MAX_Y; y++){
-            if (collisionMap[x][y] > 0) drawIndividualPixel(x, y, WHITE);
-            else drawIndividualPixel(x, y, BLACK);
-        }
-    }
-}
+//     int numCollisions = 0;
+
+//     int dyi, dxi;
+//     float mi, bi;
+//     int dyj, dxj;
+//     float mj, bj;
+
+//     int startIdxi = k? k-1 : VERTICIES_PER_BODY - 1;
+//     int endIdxi = k;
+
+//     dxi = allBodies[i].xs[startIdxi] - allBodies[i].xs[endIdxi];
+//     dyi = allBodies[i].ys[startIdxi] - allBodies[i].ys[endIdxi];
+//     if (dxi == 0){
+//         mi = 1000.0;
+//     } else {
+//         mi = (float)dyi/(float)dxi;
+//     }
+//     bi = allBodies[i].ys[startIdxi] - mi * allBodies[i].xs[startIdxi];
+
+//     for (int j = 0; j < NUM_BODIES; j++){
+        
+//         if (j==i) continue;
+//         // if (allBodies[j].extForces[forceIndex].force.x != 0.0 || allBodies[j].extForces[forceIndex].force.y != 0.0) continue;
+//         if (allBodies[i].maxPX < allBodies[j].minPX) continue;
+//         if (allBodies[i].maxPY < allBodies[j].minPY) continue;
+//         if (allBodies[j].maxPX < allBodies[i].minPX) continue;
+//         if (allBodies[j].maxPY < allBodies[i].minPY) continue;
+
+//         for (int l = 0; l < VERTICIES_PER_BODY; l++) {
+
+//             int startIdxj = l != 0 ? l-1 : VERTICIES_PER_BODY - 1;
+//             int endIdxj = l;
+
+//             dxj = allBodies[j].xs[startIdxj] - allBodies[j].xs[endIdxj];
+//             dyj = allBodies[j].ys[startIdxj] - allBodies[j].ys[endIdxj];
+//             if (dxj == 0) {
+//                 mj = 1000.0;
+//             } else {
+//                 mj = (float)dyj/(float)dxj;
+//             }
+
+//             if (mi==mj) continue;
+//             bj = allBodies[j].ys[startIdxj] - mj * allBodies[j].xs[startIdxj];
+
+//             float checkXSolution = (bj-bi)/(mi-mj);
+//             if ((checkXSolution > allBodies[j].xs[startIdxj]) || 
+//                 (checkXSolution < allBodies[j].xs[endIdxj])) {
+//                 continue;
+//             }
+//             numCollisions ++;
+
+//             // printf("Collision between %d ",i);
+//             // printf("and %d\n",j);
+
+//             // find which vetic. of i intersected w the j edge
+//             int blameIndex;
+//             float checkYSolution = bj + mj * eraseRBs[i].xs[startIdxi];
+//             if ((eraseRBs[i].ys[startIdxi] > (bj + mj * eraseRBs[i].xs[startIdxi])) 
+//             == (allBodies[i].ys[startIdxi] > (bj + mj * allBodies[i].xs[startIdxi]))) {
+//                 blameIndex = endIdxi;
+//             } else {
+//                 blameIndex = startIdxi;
+//             }
+            
+//             // force on j is in -normal dir of this edge
+//             // same w -i
+
+//             float forceAngle = atan2(dxj, -dyj);
+//             // float forceAngle = 0;
+            
+//             // float magAI = sqrt(pow(allBodies[i].a.x,2) + pow(allBodies[i].a.y,2));
+//             float magAJ = sqrt(pow(allBodies[j].a.x,2) + pow(allBodies[j].a.y,2));
+
+//             allBodies[i].extForces[forceIndex].isActive = true;
+//             allBodies[i].extForces[forceIndex].force.x = allBodies[j].mass * magAJ * cos(forceAngle);
+//             allBodies[i].extForces[forceIndex].force.y = allBodies[j].mass * magAJ * sin(forceAngle);
+//             // allBodies[j].extForces[forceIndex].force.x = allBodies[i].mass * -magAI * cos(forceAngle);
+//             // allBodies[j].extForces[forceIndex].force.y = allBodies[i].mass * -magAI * sin(forceAngle);
+
+//             allBodies[i].extForces[forceIndex].r.x = allBodies[i].pxs[blameIndex] - allBodies[i].cx;
+//             allBodies[i].extForces[forceIndex].r.y = allBodies[i].pys[blameIndex] - allBodies[i].cy;
+//             // allBodies[j].extForces[forceIndex].r.x = M_PER_PX_RB * checkXSolution - allBodies[j].cx;
+//             // allBodies[j].extForces[forceIndex].r.y = M_PER_PX_RB * (mj * checkXSolution + bj) - allBodies[j].cy;
+
+//         }
+
+//     }
+//     if (numCollisions == 0) {
+//         allBodies[i].extForces[forceIndex].isActive = false;
+//     }
+//     return numCollisions;
+// }
+
+// void fillCollisionSegment(int x0, int y0, int x1, int y1, int scale) {
+	
+// 	bool isSteep = abs(x0-x1) < abs(y0-y1);
+//     bool isAdditive = x0>x1;
+//     int xGoVal = -1;
+//     int yStopVal = -1;
+
+// 	if(isSteep){
+// 		swap(&x0, &y0);
+// 		swap(&x1, &y1);
+// 	}
+// 	if(x0>x1){
+// 		swap(&x0, &x1);
+// 		swap(&y0, &y1);
+// 	}
+	
+// 	int dx = x1 - x0;
+// 	int dy = abs(y1 - y0);
+// 	int error = -dx/2;
+	
+// 	int moveY = y1>y0 ? 1 : -1;
+	
+// 	int y = y0;
+// 	int x = x0;
+	
+// 	while(x <= x1) {
+		
+//         if ((isSteep && (xGoVal != y)) || (!isSteep && (xGoVal != x))){
+//             if (isSteep) {xGoVal = y; yStopVal = x;}
+//             else {xGoVal = x; yStopVal = y;}
+            
+//             for (int collY = yStopVal; collY >= 0; collY--){
+//                 if(isAdditive) {
+//                     if(collisionMap[xGoVal][collY] == scale) break;
+//                     collisionMap[xGoVal][collY] += scale;
+//                 }
+//                 else {
+//                     if(collisionMap[xGoVal][collY] == -scale) break;
+//                     collisionMap[xGoVal][collY] -= scale;
+//                 }
+//             }
+            
+//         }
+		
+// 		error = error + dy;
+// 		if (error > 0){
+// 			y = y + moveY;
+// 			error = error - dx;
+// 		}
+		
+// 		x++;
+		
+// 	}
+
+// }
+
+// void clearCollisionMap() {
+//     for (int x = 0; x < MAX_X; x++){
+//         for (int y = 0; y < MAX_Y; y++){
+//             collisionMap[x][y] = 0;
+//         }
+//     }
+// }
+
+// void updateCollisionMap(int i) {
+//     int cScale = MAX_Y - (PX_PER_M_RB * allBodies[i].cy);
+//     // int cScale = 1;
+//     for (int j = 1; j < VERTICIES_PER_BODY; j++){
+//         fillCollisionSegment(allBodies[i].xs[j-1], allBodies[i].ys[j-1], allBodies[i].xs[j], allBodies[i].ys[j], cScale);
+//     }
+//     fillCollisionSegment(allBodies[i].xs[VERTICIES_PER_BODY-1], allBodies[i].ys[VERTICIES_PER_BODY-1], allBodies[i].xs[0], allBodies[i].ys[0], cScale);
+// }
+
+// void visualizeCollisionMap(){
+//     for (int x = 0; x < (MAX_X); x++){
+//         for (int y = 0; y < MAX_Y; y++){
+//             if (collisionMap[x][y] > 0) drawIndividualPixel(x, y, WHITE);
+//             else drawIndividualPixel(x, y, BLACK);
+//         }
+//     }
+// }
 
 void initRigidBodies() {
 
@@ -804,8 +1360,8 @@ void initRigidBodies() {
             sumX += allBodies[i].pxs[j];
             sumY += allBodies[i].pys[j];
 
-            printf("\nsX:%d", signX);
-            printf("\nsY:%d\n\n", signY);
+            // printf("\nsX:%d", signX);
+            // printf("\nsY:%d\n\n", signY);
 
             if(signX == -1) {
                 signX = 1;
@@ -846,6 +1402,11 @@ void initRigidBodies() {
             allBodies[i].constThetas[j] = atan2(dy, dx);
 
         }
+
+        allBodies[i].maxPX = maxX * PX_PER_M_RB;
+        allBodies[i].maxPY = maxY * PX_PER_M_RB;
+        allBodies[i].minPX = minX * PX_PER_M_RB;
+        allBodies[i].minPY = minY * PX_PER_M_RB;
 
         allBodies[i].mass = BODY_DENSITY * abs(runningAreaCount);
         allBodies[i].I = allBodies[i].mass * (pow(maxX-minX, 2) + pow(maxY-minY, 2)) / 12.0;
@@ -893,6 +1454,11 @@ void stepBodyPositions(int i) {
 
     float ndx, ndy, nt;
     for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+
+        if (allBodies[i].xs[j] > allBodies[i].maxPX) allBodies[i].maxPX = allBodies[i].xs[j];
+        else if (allBodies[i].xs[j] < allBodies[i].minPX) allBodies[i].minPX = allBodies[i].xs[j];
+        if (allBodies[i].ys[j] > allBodies[i].maxPY) allBodies[i].maxPY = allBodies[i].ys[j];
+        else if (allBodies[i].ys[j] < allBodies[i].minPY) allBodies[i].minPY = allBodies[i].ys[j];
         
         eraseRBs[i].xs[j] = allBodies[i].xs[j];
         eraseRBs[i].ys[j] = allBodies[i].ys[j];
@@ -952,9 +1518,29 @@ void stepBodyVelocities(int i) {
 void checkCollisions(int i) {
 
     int collisionCount = 0;
+    int interCollisionCount = 0;
+
+    checkSATInterBodyCollision(i);
+    
     for (int j = 0; j < VERTICIES_PER_BODY; j++) {
 
+        //interCollisionCount += checkInterBodyCollision(i, j, VERTICIES_PER_BODY+interCollisionCount);
+
         bool setActive = false;
+
+        // // Collision Map (inter-body) collision handling. This is SEGFAULT PRONE!!! 
+        // if(collisionMap[allBodies[i].xs[j]][allBodies[i].ys[j]] > 0) {
+        //     if((allBodies[i].v.y > 0) == (allBodies[i].ys[j] >= (MAX_Y-1))) {
+        //         allBodies[i].v.y = -allBodies[i].v.y * ELASTICITY_RB;
+        //     }
+
+        //     allBodies[i].extForces[j].force.x = -allBodies[i].mass * allBodies[i].a.x;
+        //     allBodies[i].extForces[j].force.y = -allBodies[i].mass * allBodies[i].a.y;
+
+        //     setActive = true;
+        //     collisionCount++;
+        // }
+
         // Container collision handling
         if(allBodies[i].xs[j] >= (MAX_X-1) || allBodies[i].xs[j] <= 0) {
             
@@ -1013,15 +1599,21 @@ void timeStepRBForceApplication() {
     // model collisions with normal forces.
     for (int i = 0; i < NUM_BODIES; i++) {
         
+        for (int j = 0; j < NUM_BODIES; j++) bookMarkedCollisions[i][j] = false;
+
         allBodies[i].a.x = 0;
         allBodies[i].a.y = G;
         
         float torque = 0;
-        for (int j = 0; j < VERTICIES_PER_BODY; j++) {
+        for (int j = 0; j < MAX_EXTERNAL_FORCES; j++) {
             if (!allBodies[i].extForces[j].isActive) continue;
+            // if (j >= VERTICIES_PER_BODY) {
+                // allBodies[i].a.x += allBodies[i].extForces[j].force.x / allBodies[i].mass;
+                // allBodies[i].a.y += allBodies[i].extForces[j].force.y / allBodies[i].mass;
+            // }
             torque += allBodies[i].extForces[j].r.x * allBodies[i].extForces[j].force.y - allBodies[i].extForces[j].r.y * allBodies[i].extForces[j].force.x;
         }
-
+        
         allBodies[i].alpha = torque / allBodies[i].I;
         checkCollisions(i);
         stepBodyVelocities(i);
@@ -1035,11 +1627,16 @@ void timeStepRBForceApplication() {
 //                                                   MAIN
 // =======================================================================================================
 
-bool isFluidSim = false;
+bool isFluidSim = true;
+bool lastFluidSim = true;
+
+void buttonClickHandler() {
+    isFluidSim = !isFluidSim;
+}
+
 int main(void){ // main for this simulation
 
-    mouseData mData;
-    mouseData prevmData;
+    volatile int * sw_ptr = (volatile int *)SW_BASE;
 
     initParticles();
     initRigidBodies();
@@ -1051,24 +1648,32 @@ int main(void){ // main for this simulation
 
     // Program loop
     while(1) {
-
+        
+        // isFluidSim = (*sw_ptr & 1) == 1;
+        if (isFluidSim != lastFluidSim) {
+            if (lastFluidSim) eraseParticles();
+            else eraseBodies();
+        }
+        lastFluidSim = isFluidSim;
         // Erase Stuff
         if (isFluidSim) eraseParticles();
         else eraseBodies();
 
-        // drawMouse(&prevmData, BLACK);
+        drawMouse(&prevmData, BLACK);
 
         // Draw Stuff
         if (isFluidSim) drawParticles();
         else drawBodies();
 
-        // drawMouse(&mData, WHITE);
+        drawButton();
+        drawMouse(&mData, WHITE);
+        prevmData = mData;
         
         // Update Stuff 
         // prevmData = mData;
         // updateMouse(&mData);
         
-        if (isFluidSim) timeStepSPHApproximation();
+        if (isFluidSim) timeStepBucketwiseParticleUpdate();
         else timeStepRBForceApplication();
 
         // Wait for Stuff
