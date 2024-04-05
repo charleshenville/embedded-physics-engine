@@ -413,7 +413,7 @@ void drawButton(){
 
 // -g -Wall -O1 -ffunction-sections -fverbose-asm -fno-inline -mno-cache-volatile -mhw-div -mcustom-fpu-cfg=60-2 -mhw-mul -mhw-mulx
 
-#define NUM_PARTICLES       150 // 192, 48, 12
+#define NUM_PARTICLES       200 // 192, 48, 12
 
 #define WATER_COLOUR        27743
 #define WATER_HUE           0.62
@@ -425,37 +425,36 @@ void drawButton(){
 
 #define INIT_VAR            9
 
-#define G                   6.0
-#define K                   7.5
-#define H_H                 4.0
-#define PARTICLE_MASS       0.1
-#define SPF                 0.01 // Seconds Per Frame
-#define ELASTICITY          0.25 // 0 to 1
+#define G                   2.0
+#define K                   8.0
+#define H_H                 5.0
+#define SPF                 0.02 // Seconds Per Frame
+#define VELOCITY_DECAY      0.92
+#define ELASTICITY          0.2 // 0 to 1
 #define VELOCITY_COLOUR_SENSITIVITY 20.0
 #define VISCOSITY           1.0
 #define ROOT_TWO_SCALE      1.414
 
-#define TUG_ACCELERATION    10.0
-#define TUG_VELOCITY        0.001
+#define TUG_ACCELERATION    5.0
+#define EPSILON             0.001
 
 #define M_PER_PX            0.02
 #define PX_PER_M            50.0
-#define MOUSE_A_MAG         1000.0
+#define MOUSE_A_MAG         150.0
+#define MOUSE_ROE           30.0
 
-#define DENSITY_RESTING     2000.0
+#define DENSITY_RESTING     6500.0
 
-// use malloc to create all of these instread of static
+// use malloc to create all of these instread of static later
 #define NUM_BUCKETS 32
 #define BUCKET_WIDTH (MAX_X/NUM_BUCKETS)
 #define HALF_BUCKET_WIDTH (BUCKET_WIDTH>>1)
 
 // for iteration almost exclusively.
 int numElementsInBucket_even[NUM_BUCKETS] = {0};
-int numElementsInBucket_odd[NUM_BUCKETS] = {0};
 int neighbourBucketIndexes[3] = {0};
 
 int buckets_even[NUM_BUCKETS][NUM_PARTICLES];
-int buckets_odd[NUM_BUCKETS][NUM_PARTICLES];
 int lastSeen[NUM_PARTICLES][NUM_PARTICLES];
 int lastSeen2[NUM_PARTICLES][NUM_PARTICLES];
 int timeStep = 0;
@@ -507,7 +506,6 @@ void initParticles() {
     // h = M_PER_PX * (stepX + stepY) / 2.0;
     h = M_PER_PX * H_H;
 
-    // alpha = 5.0/(14.0*M_PI*h*h);
     alpha = 5.0/(14.0*3.14159265*h*h);
     inv_rho_naught = 1.0/(float)DENSITY_RESTING;
     nu = h*h/100.0;
@@ -549,14 +547,28 @@ void initParticles() {
     }
 }
 
+void draw2b2(int x, int y, short int colour) {
+    drawIndividualPixel(x, y, colour);
+    if (x < (MAX_X-2) && y > 1) {
+        drawIndividualPixel(x + 1, y, colour);
+        drawIndividualPixel(x + 1, y - 1, colour);
+        drawIndividualPixel(x, y - 1, colour);
+    } else if (x < (MAX_X-2)) {
+        drawIndividualPixel(x + 1, y, colour);
+    } else if (y > 1) {
+        drawIndividualPixel(x, y - 1, colour);
+    }
+}
 void eraseParticles() {
     for (int i = 0; i < NUM_PARTICLES; i++) {
-        drawIndividualPixel(allEraseParticles[i].x, allEraseParticles[i].y, BLACK);
+        //drawIndividualPixel(allParticles[i].x, allParticles[i].y, BLACK);
+        draw2b2(allEraseParticles[i].x, allEraseParticles[i].y, BLACK);
     }
 }
 void drawParticles() {
     for (int i = 0; i < NUM_PARTICLES; i++) {
-        drawIndividualPixel(allParticles[i].x, allParticles[i].y, allParticles[i].colour);
+        //drawIndividualPixel(allParticles[i].x, allParticles[i].y, allParticles[i].colour);
+        draw2b2(allParticles[i].x, allParticles[i].y, allParticles[i].colour);
     }
 }
 
@@ -573,13 +585,19 @@ void stepSPHPositions(int i) {
     // If, for whatever reason, we went out of bounds after velocity application, fix them manually.
 	if (allParticles[i].x <= 0){
 		allParticles[i].x = 0;
+        // allParticles[i].pX = EPSILON;
+        
 	} else if (allParticles[i].x > (MAX_X - 1)) {
 		allParticles[i].x = MAX_X-1;
+        // allParticles[i].pX = M_PER_PX * allParticles[i].x;
 	}
-	if (allParticles[i].y < 0){
+	if (allParticles[i].y <= 0){
 		allParticles[i].y = 0;
+        // allParticles[i].pY = EPSILON;
+
 	} else if (allParticles[i].y > (MAX_Y -1)){
 		allParticles[i].y = MAX_Y-1;
+        allParticles[i].pY = M_PER_PX * allParticles[i].y;
 	}
     
 }
@@ -589,20 +607,20 @@ void doVelocityStepCheck(int i) {
     if((allParticles[i].x >= (MAX_X-1) && allParticles[i].vx > 0) || (allParticles[i].x <= 0 && allParticles[i].vx < 0)) {
         allParticles[i].vx = -allParticles[i].vx*ELASTICITY;
     }
-    else if(allParticles[i].x <= hpx && allParticles[i].vx < TUG_VELOCITY) {
+    else if(allParticles[i].x <= hpx && allParticles[i].vx < EPSILON) {
         allParticles[i].ax += TUG_ACCELERATION;
     }
-    else if(allParticles[i].x >= (MAX_X-1-hpx) && allParticles[i].vx > -TUG_VELOCITY) {
+    else if(allParticles[i].x >= (MAX_X-1-hpx) && allParticles[i].vx > -EPSILON) {
         allParticles[i].ax -= TUG_ACCELERATION;
     }
 
     if((allParticles[i].y >= (MAX_Y-1) && allParticles[i].vy > 0) || (allParticles[i].y <= 0 && allParticles[i].vy < 0)) {
         allParticles[i].vy = -allParticles[i].vy*ELASTICITY;
     }
-    else if(allParticles[i].y <= hpx && allParticles[i].vy < TUG_VELOCITY) {
+    else if(allParticles[i].y <= hpx && allParticles[i].vy < EPSILON) {
         allParticles[i].ay += TUG_ACCELERATION;
     }
-    else if(allParticles[i].y >= (MAX_Y-1-hpx) && allParticles[i].vy > -TUG_VELOCITY) {
+    else if(allParticles[i].y >= (MAX_Y-1-hpx) && allParticles[i].vy > -EPSILON) {
         allParticles[i].ay -= TUG_ACCELERATION;
     }
 }
@@ -616,12 +634,18 @@ void stepSPHVelocities(int i) {
         allParticles[i].vx += allParticles[i].ax*SPF;
     } else if ((allParticles[i].vx > 0) != (allParticles[i].ax > 0)) {
         allParticles[i].vx += allParticles[i].ax*SPF;
+    } if (isnan(allParticles[i].vx)) {
+        allParticles[i].vx = 0.0;
     }
     if(floatAbs(allParticles[i].vy) < VELOCITY_COLOUR_SENSITIVITY/2){
         allParticles[i].vy += allParticles[i].ay*SPF;
     } else if ((allParticles[i].vy > 0) != (allParticles[i].ay > 0)) {
         allParticles[i].vy += allParticles[i].ay*SPF;
+    } if (isnan(allParticles[i].vy)) {
+        allParticles[i].vy = 0.0;
     }
+    allParticles[i].vx *= VELOCITY_DECAY;
+    allParticles[i].vx *= VELOCITY_DECAY;
     allParticles[i].colour = hueToRGB565(WATER_HUE-sqrt(allParticles[i].vx*allParticles[i].vx + allParticles[i].vy*allParticles[i].vy)/VELOCITY_COLOUR_SENSITIVITY);
 
 }
@@ -637,11 +661,12 @@ void calculateSPHAccelerations(int i) {
     float x_ij2, viscosScale;
     float x_ij, q;
 
+    // if (-EPSILON < allParticles[i].density < EPSILON) {
+    //     allParticles[i].density = EPSILON;
+    // }
     float pressureRatio_i = allParticles[i].pressure / (allParticles[i].density * allParticles[i].density);
     float inv_rho_j, pressureRatio_j;
 
-    // doVelocityStepCheck(i);
-    // if (allParticles[i].ax != 0 || allParticles[i].ay != G) return;
     for(int nbIdx = 0; nbIdx < 3; nbIdx++){
 
         int buck = allParticles[i].bucketIndexes[nbIdx];
@@ -650,7 +675,7 @@ void calculateSPHAccelerations(int i) {
         for (int pos_j = 0; pos_j < numElementsInBucket_even[buck]; pos_j++) {
         
             int j = buckets_even[buck][pos_j];
-            // int j = buckets_odd[allParticles[i].bucketIndex][pos_j];
+            if (i==j) continue;
 
             if (lastSeen[i][j] == timeStep || lastSeen[j][i] == timeStep) continue;
             lastSeen[i][j] = timeStep;
@@ -666,21 +691,17 @@ void calculateSPHAccelerations(int i) {
             dy = allParticles[i].neighbourDYs[j];
 
             x_ij = allParticles[i].neighbourDistances[j];
+            // if(-EPSILON < x_ij < EPSILON) {
+            //     x_ij = EPSILON;
+            // }
             x_ij2 = x_ij*x_ij;
 
-            // if(q < 1){
-            //     q = - 3 * pow((2-q), 2) + 12 * pow((1-q), 2);
-            // } else if (q < 2) {
-            //     q = - 3 * pow((2-q), 2);
-            // } else {
-            //     continue; // q is zero so save calcs by continuing
-            // }
-            
             GRADW_ijx = alpha * dx * q / (x_ij * h);
             GRADW_ijy = alpha * dy * q / (x_ij * h);
 
             // Pressure Acceleration
 
+            // if (-EPSILON < allParticles[j].density < EPSILON) continue;
             inv_rho_j = 1/allParticles[j].density;
             pressureRatio_j = allParticles[j].pressure * inv_rho_j * inv_rho_j;
             allParticles[i].ax -= (pressureRatio_i + pressureRatio_j) * GRADW_ijx;
@@ -698,21 +719,27 @@ void calculateSPHAccelerations(int i) {
         }
     }
 
+    // Check for nan
+    if(isnan(allParticles[i].ax) || isnan(allParticles[i].ay)) {
+        allParticles[i].ax = 0;
+        allParticles[i].ay = G;
+    }
     // Mouse Acceleration
     if(!mData.left) return;
     // printf("HERE");
     dx = (float)allParticles[i].x - (float)mData.x;
     dy = (float)allParticles[i].y - (float)mData.y;
     float mag = sqrt(dx*dx+dy*dy);
-    if (mag < 2*h*PX_PER_M) {
-        allParticles[i].ax += MOUSE_A_MAG * dx/(mag*mag);
-        allParticles[i].ay += MOUSE_A_MAG * dy/(mag*mag);
+    if (mag < MOUSE_ROE) {
+        allParticles[i].ax += MOUSE_A_MAG * dx/(mag);
+        allParticles[i].ay += MOUSE_A_MAG * dy/(mag);
     }
 
 } 
 
 void timeStepSPHApproximation(int i, int j) {
-        
+    
+    if (i==j) return;
     // 1. Find nearest neighbours j for particle i
     // 2. Calculate Density and Pressure at every particle i
 
@@ -764,7 +791,6 @@ void timeStepSPHApproximation(int i, int j) {
 
         
         rho = alpha*q;
-        //printf("\nrho: %f", rho);
         allParticles[i].density += rho;
         allParticles[j].density += rho;
 
@@ -794,7 +820,6 @@ void timeStepBucketwiseParticleUpdate() {
     // clean buckets
     for (int bucket = 0; bucket < NUM_BUCKETS; bucket++) {
         numElementsInBucket_even[bucket] = 0;
-        // numElementsInBucket_odd[bucket] = 0;
     }
 
     // Populate all buckets with particle indicies appropriately
@@ -807,12 +832,6 @@ void timeStepBucketwiseParticleUpdate() {
         // assert(evenBucket >= 0 && evenBucket < NUM_BUCKETS);
         buckets_even[evenBucket][numElementsInBucket_even[evenBucket]] = i;
         numElementsInBucket_even[evenBucket]++;
-
-        // int oddBucket = ((allParticles[i].x+HALF_BUCKET_WIDTH)/BUCKET_WIDTH);
-        // if(oddBucket < NUM_BUCKETS) {
-        //     buckets_odd[oddBucket][numElementsInBucket_even[oddBucket]] = i;
-        //     numElementsInBucket_odd[oddBucket]++;
-        // }
 
     }
 
@@ -831,23 +850,6 @@ void timeStepBucketwiseParticleUpdate() {
             neighbourBucketIndexes[1] = bucket;
             neighbourBucketIndexes[2] = bucket+1;
         }
-        
-        // if (bucket != (NUM_BUCKETS-1)) for (int pos_i = 0; pos_i < numElementsInBucket_odd[bucket]; pos_i++) {
-        //     int i = buckets_odd[bucket][pos_i];
-        //     for (int pos_j = 0; pos_j < numElementsInBucket_odd[bucket]; pos_j++) {
-
-        //         int j = buckets_odd[bucket][pos_j];
-        //         // if(j<(i+1)) continue;
-
-        //         lastSeen[i][j] = timeStep;
-
-        //         // Call helper function to actually process i/j collision
-        //         allParticles[i].bucketIndex = bucket;
-        //         timeStepSPHApproximation(i,j);
-
-        //     }
-        //     // generalParticleUpdate(i, numElementsInBucket_odd[bucket]);
-        // }
 
         for (int pos_i = 0; pos_i < numElementsInBucket_even[bucket]; pos_i++) {
             int i = buckets_even[bucket][pos_i];
