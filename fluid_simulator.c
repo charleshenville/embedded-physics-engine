@@ -190,10 +190,11 @@ void drawBresenhamLine(int x0, int y0, int x1, int y1, short int colour){
 
 #define PS2_BASE        0xFF200100
 #define MOUSE_RADIUS    2
-#define BUTTON_X 301
-#define BUTTON_Y 4
+#define BUTTON_X        301
+#define BUTTON_Y        4
 
 void buttonClickHandler();
+void resetSimHandler();
 typedef struct mouseData {
   int x;
   int y;
@@ -898,14 +899,19 @@ void timeStepBucketwiseParticleUpdate() {
 
 #define ELASTICITY_RB       0.4
 #define SPH_RB              0.2
-#define NUM_BODIES          6
+#define NUM_BODIES          8
+
+#define G_RB                9.81
 
 #define PX_PER_M_RB         1.0
 #define M_PER_PX_RB         1.0
 
+#define INT_MAX_C           2147483647
+#define INT_MIN_C           -2147483648
+
 #define VERTICIES_PER_BODY  4
 #define MAX_EXTERNAL_FORCES (VERTICIES_PER_BODY + NUM_BODIES)
-#define VERT_VARIANCE       30
+#define VERT_VARIANCE       0
 #define VELOCITY_COLOUR_SENSITIVITY_RB 100.0
 
 #define BODY_DENSITY        2
@@ -965,6 +971,8 @@ bool bookMarkedCollisions[NUM_BODIES][NUM_BODIES];
 DrawBody eraseRBs [NUM_BODIES];
 RigidBody allBodies [NUM_BODIES];
 
+int currentMouseInteractionObj;
+
 float dotProd2D(Vector2D * a, Vector2D * b){
     return a->x * b->x + a->y * b->y;
 }
@@ -978,6 +986,7 @@ float floatMin(float a, float b){
 // Credit to the SAT. (Seperating Axis Theorem).
 void checkSATInterBodyCollision(int i){
     
+    if (i==currentMouseInteractionObj) return;
     float dy, dx;
     float maxiDot, miniDot;
     float maxjDot, minjDot;
@@ -988,6 +997,7 @@ void checkSATInterBodyCollision(int i){
 
         forceIndex += 1;
         if (j==i) continue;
+        if (j==currentMouseInteractionObj) continue;
         if (bookMarkedCollisions[i][j]) continue;
         // Hold the minimum found sep value between bodies i and j.
         float minSep = 1.0e38;
@@ -1081,8 +1091,8 @@ void checkSATInterBodyCollision(int i){
             bookMarkedCollisions[minSepEdgeBodyIdx][minSepVertBodyIdx] = true;
 
             allBodies[minSepVertBodyIdx].extForces[forceIndex].isActive = true;
-            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.x = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepVertBodyIdx].a.x;
-            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.y = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepVertBodyIdx].a.y;
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.x = -allBodies[minSepVertBodyIdx].mass * allBodies[minSepVertBodyIdx].a.x;
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.y = -allBodies[minSepVertBodyIdx].mass * allBodies[minSepVertBodyIdx].a.y;
             allBodies[minSepVertBodyIdx].extForces[forceIndex].r.x = allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx] - allBodies[minSepVertBodyIdx].cx;
             allBodies[minSepVertBodyIdx].extForces[forceIndex].r.y = allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx] - allBodies[minSepVertBodyIdx].cy;
 
@@ -1090,8 +1100,8 @@ void checkSATInterBodyCollision(int i){
                 float velocityVecMag = sqrt(pow(allBodies[minSepVertBodyIdx].v.x, 2) + pow(allBodies[minSepVertBodyIdx].v.x, 2));
                 float dotMag = dotProd2D(&allBodies[minSepVertBodyIdx].v, &normMinEdgeResponsible);
                 // dotMag = dotMag < 0 ? dotMag : -dotMag;
-                allBodies[minSepVertBodyIdx].v.x = -(allBodies[minSepEdgeBodyIdx].mass / allBodies[minSepVertBodyIdx].mass) * dotMag * normMinEdgeResponsible.x * ELASTICITY_RB;
-                allBodies[minSepVertBodyIdx].v.y = -(allBodies[minSepEdgeBodyIdx].mass / allBodies[minSepVertBodyIdx].mass) * dotMag * normMinEdgeResponsible.y * ELASTICITY_RB;
+                allBodies[minSepVertBodyIdx].v.x = (allBodies[minSepEdgeBodyIdx].mass / allBodies[minSepVertBodyIdx].mass) * dotMag * normMinEdgeResponsible.x * 2 * ELASTICITY_RB;
+                allBodies[minSepVertBodyIdx].v.y = (allBodies[minSepEdgeBodyIdx].mass / allBodies[minSepVertBodyIdx].mass) * dotMag * normMinEdgeResponsible.y * 2 * ELASTICITY_RB;
             }
 
             allBodies[minSepEdgeBodyIdx].extForces[forceIndex].isActive = true;
@@ -1101,8 +1111,8 @@ void checkSATInterBodyCollision(int i){
             allBodies[minSepEdgeBodyIdx].extForces[forceIndex].r.y = allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx] - allBodies[minSepEdgeBodyIdx].cy;
             
             if(!allBodies[minSepEdgeBodyIdx].collidedLastStep){
-                allBodies[minSepEdgeBodyIdx].v.x *= -(allBodies[minSepVertBodyIdx].mass / allBodies[minSepEdgeBodyIdx].mass) * ELASTICITY_RB;
-                allBodies[minSepEdgeBodyIdx].v.y *= -(allBodies[minSepVertBodyIdx].mass / allBodies[minSepEdgeBodyIdx].mass) * ELASTICITY_RB;
+                allBodies[minSepEdgeBodyIdx].v.x *= -(allBodies[minSepVertBodyIdx].mass / allBodies[minSepEdgeBodyIdx].mass) * 2 * ELASTICITY_RB;
+                allBodies[minSepEdgeBodyIdx].v.y *= -(allBodies[minSepVertBodyIdx].mass / allBodies[minSepEdgeBodyIdx].mass) * 2 * ELASTICITY_RB;
             }
 
             // printf("Collision detected between bodies %d ", minSepEdgeBodyIdx);
@@ -1122,184 +1132,6 @@ void checkSATInterBodyCollision(int i){
 
     }
 }
-
-// int checkInterBodyCollision(int i, int k, int forceIndex){
-//     //given edge k of body i
-
-//     int numCollisions = 0;
-
-//     int dyi, dxi;
-//     float mi, bi;
-//     int dyj, dxj;
-//     float mj, bj;
-
-//     int startIdxi = k? k-1 : VERTICIES_PER_BODY - 1;
-//     int endIdxi = k;
-
-//     dxi = allBodies[i].xs[startIdxi] - allBodies[i].xs[endIdxi];
-//     dyi = allBodies[i].ys[startIdxi] - allBodies[i].ys[endIdxi];
-//     if (dxi == 0){
-//         mi = 1000.0;
-//     } else {
-//         mi = (float)dyi/(float)dxi;
-//     }
-//     bi = allBodies[i].ys[startIdxi] - mi * allBodies[i].xs[startIdxi];
-
-//     for (int j = 0; j < NUM_BODIES; j++){
-        
-//         if (j==i) continue;
-//         // if (allBodies[j].extForces[forceIndex].force.x != 0.0 || allBodies[j].extForces[forceIndex].force.y != 0.0) continue;
-//         if (allBodies[i].maxPX < allBodies[j].minPX) continue;
-//         if (allBodies[i].maxPY < allBodies[j].minPY) continue;
-//         if (allBodies[j].maxPX < allBodies[i].minPX) continue;
-//         if (allBodies[j].maxPY < allBodies[i].minPY) continue;
-
-//         for (int l = 0; l < VERTICIES_PER_BODY; l++) {
-
-//             int startIdxj = l != 0 ? l-1 : VERTICIES_PER_BODY - 1;
-//             int endIdxj = l;
-
-//             dxj = allBodies[j].xs[startIdxj] - allBodies[j].xs[endIdxj];
-//             dyj = allBodies[j].ys[startIdxj] - allBodies[j].ys[endIdxj];
-//             if (dxj == 0) {
-//                 mj = 1000.0;
-//             } else {
-//                 mj = (float)dyj/(float)dxj;
-//             }
-
-//             if (mi==mj) continue;
-//             bj = allBodies[j].ys[startIdxj] - mj * allBodies[j].xs[startIdxj];
-
-//             float checkXSolution = (bj-bi)/(mi-mj);
-//             if ((checkXSolution > allBodies[j].xs[startIdxj]) || 
-//                 (checkXSolution < allBodies[j].xs[endIdxj])) {
-//                 continue;
-//             }
-//             numCollisions ++;
-
-//             // printf("Collision between %d ",i);
-//             // printf("and %d\n",j);
-
-//             // find which vetic. of i intersected w the j edge
-//             int blameIndex;
-//             float checkYSolution = bj + mj * eraseRBs[i].xs[startIdxi];
-//             if ((eraseRBs[i].ys[startIdxi] > (bj + mj * eraseRBs[i].xs[startIdxi])) 
-//             == (allBodies[i].ys[startIdxi] > (bj + mj * allBodies[i].xs[startIdxi]))) {
-//                 blameIndex = endIdxi;
-//             } else {
-//                 blameIndex = startIdxi;
-//             }
-            
-//             // force on j is in -normal dir of this edge
-//             // same w -i
-
-//             float forceAngle = atan2(dxj, -dyj);
-//             // float forceAngle = 0;
-            
-//             // float magAI = sqrt(pow(allBodies[i].a.x,2) + pow(allBodies[i].a.y,2));
-//             float magAJ = sqrt(pow(allBodies[j].a.x,2) + pow(allBodies[j].a.y,2));
-
-//             allBodies[i].extForces[forceIndex].isActive = true;
-//             allBodies[i].extForces[forceIndex].force.x = allBodies[j].mass * magAJ * cos(forceAngle);
-//             allBodies[i].extForces[forceIndex].force.y = allBodies[j].mass * magAJ * sin(forceAngle);
-//             // allBodies[j].extForces[forceIndex].force.x = allBodies[i].mass * -magAI * cos(forceAngle);
-//             // allBodies[j].extForces[forceIndex].force.y = allBodies[i].mass * -magAI * sin(forceAngle);
-
-//             allBodies[i].extForces[forceIndex].r.x = allBodies[i].pxs[blameIndex] - allBodies[i].cx;
-//             allBodies[i].extForces[forceIndex].r.y = allBodies[i].pys[blameIndex] - allBodies[i].cy;
-//             // allBodies[j].extForces[forceIndex].r.x = M_PER_PX_RB * checkXSolution - allBodies[j].cx;
-//             // allBodies[j].extForces[forceIndex].r.y = M_PER_PX_RB * (mj * checkXSolution + bj) - allBodies[j].cy;
-
-//         }
-
-//     }
-//     if (numCollisions == 0) {
-//         allBodies[i].extForces[forceIndex].isActive = false;
-//     }
-//     return numCollisions;
-// }
-
-// void fillCollisionSegment(int x0, int y0, int x1, int y1, int scale) {
-	
-// 	bool isSteep = abs(x0-x1) < abs(y0-y1);
-//     bool isAdditive = x0>x1;
-//     int xGoVal = -1;
-//     int yStopVal = -1;
-
-// 	if(isSteep){
-// 		swap(&x0, &y0);
-// 		swap(&x1, &y1);
-// 	}
-// 	if(x0>x1){
-// 		swap(&x0, &x1);
-// 		swap(&y0, &y1);
-// 	}
-	
-// 	int dx = x1 - x0;
-// 	int dy = abs(y1 - y0);
-// 	int error = -dx/2;
-	
-// 	int moveY = y1>y0 ? 1 : -1;
-	
-// 	int y = y0;
-// 	int x = x0;
-	
-// 	while(x <= x1) {
-		
-//         if ((isSteep && (xGoVal != y)) || (!isSteep && (xGoVal != x))){
-//             if (isSteep) {xGoVal = y; yStopVal = x;}
-//             else {xGoVal = x; yStopVal = y;}
-            
-//             for (int collY = yStopVal; collY >= 0; collY--){
-//                 if(isAdditive) {
-//                     if(collisionMap[xGoVal][collY] == scale) break;
-//                     collisionMap[xGoVal][collY] += scale;
-//                 }
-//                 else {
-//                     if(collisionMap[xGoVal][collY] == -scale) break;
-//                     collisionMap[xGoVal][collY] -= scale;
-//                 }
-//             }
-            
-//         }
-		
-// 		error = error + dy;
-// 		if (error > 0){
-// 			y = y + moveY;
-// 			error = error - dx;
-// 		}
-		
-// 		x++;
-		
-// 	}
-
-// }
-
-// void clearCollisionMap() {
-//     for (int x = 0; x < MAX_X; x++){
-//         for (int y = 0; y < MAX_Y; y++){
-//             collisionMap[x][y] = 0;
-//         }
-//     }
-// }
-
-// void updateCollisionMap(int i) {
-//     int cScale = MAX_Y - (PX_PER_M_RB * allBodies[i].cy);
-//     // int cScale = 1;
-//     for (int j = 1; j < VERTICIES_PER_BODY; j++){
-//         fillCollisionSegment(allBodies[i].xs[j-1], allBodies[i].ys[j-1], allBodies[i].xs[j], allBodies[i].ys[j], cScale);
-//     }
-//     fillCollisionSegment(allBodies[i].xs[VERTICIES_PER_BODY-1], allBodies[i].ys[VERTICIES_PER_BODY-1], allBodies[i].xs[0], allBodies[i].ys[0], cScale);
-// }
-
-// void visualizeCollisionMap(){
-//     for (int x = 0; x < (MAX_X); x++){
-//         for (int y = 0; y < MAX_Y; y++){
-//             if (collisionMap[x][y] > 0) drawIndividualPixel(x, y, WHITE);
-//             else drawIndividualPixel(x, y, BLACK);
-//         }
-//     }
-// }
 
 void initRigidBodies() {
 
@@ -1441,27 +1273,56 @@ void drawBodies() {
 
 }
 
+void updateRBMinsAndMaxes(int i){
+
+    int cMaxX = INT_MIN_C;
+    int cMaxY = INT_MIN_C;
+    int cMinX = INT_MAX_C;
+    int cMinY = INT_MAX_C;
+    for (int vertIdx = 0; vertIdx < VERTICIES_PER_BODY; vertIdx++) {
+        if (allBodies[i].xs[vertIdx] > cMaxX) cMaxX = allBodies[i].xs[vertIdx];
+        if (allBodies[i].xs[vertIdx] < cMinX) cMinX = allBodies[i].xs[vertIdx];
+        if (allBodies[i].ys[vertIdx] > cMaxY) cMaxY = allBodies[i].ys[vertIdx];
+        if (allBodies[i].ys[vertIdx] < cMinY) cMinY = allBodies[i].ys[vertIdx];
+    }
+    allBodies[i].maxPX = cMaxX;
+    allBodies[i].minPX = cMinX;
+    allBodies[i].maxPY = cMaxY;
+    allBodies[i].minPY = cMinY;
+    // if (i == 0) {
+    //     printf("maxX:%d\n", cMaxX);
+    //     printf("minX:%d\n", cMinX);
+    //     printf("maxY:%d\n", cMaxY);
+    //     printf("minY:%d\n", cMinY);
+    // }
+
+}
+
 void stepBodyPositions(int i) {
 
     // Must also update positions of all verticies
 
     float pt = allBodies[i].theta;
 
-    allBodies[i].theta += allBodies[i].omega * SPH_RB;
-    allBodies[i].cx += allBodies[i].v.x * SPH_RB;
-    allBodies[i].cy += allBodies[i].v.y * SPH_RB;
-
+    if (i!=currentMouseInteractionObj){
+        allBodies[i].theta += allBodies[i].omega * SPH_RB;
+        allBodies[i].cx += allBodies[i].v.x * SPH_RB;
+        allBodies[i].cy += allBodies[i].v.y * SPH_RB;
+    } else {
+        allBodies[i].cx = mData.x;
+        allBodies[i].cy = mData.y;
+        allBodies[i].omega = 0;
+        allBodies[i].v.x = 0.0;
+        allBodies[i].v.y = 0.0;
+    }
+    
     // Revert last position application if any vert out of bounds.
     bool mustAdjust = false;
 
     float ndx, ndy, nt;
-    for (int j = 0; j < VERTICIES_PER_BODY; j++) {
 
-        if (allBodies[i].xs[j] > allBodies[i].maxPX) allBodies[i].maxPX = allBodies[i].xs[j];
-        else if (allBodies[i].xs[j] < allBodies[i].minPX) allBodies[i].minPX = allBodies[i].xs[j];
-        if (allBodies[i].ys[j] > allBodies[i].maxPY) allBodies[i].maxPY = allBodies[i].ys[j];
-        else if (allBodies[i].ys[j] < allBodies[i].minPY) allBodies[i].minPY = allBodies[i].ys[j];
-        
+    for (int j = 0; j < VERTICIES_PER_BODY; j++) {    
+
         eraseRBs[i].xs[j] = allBodies[i].xs[j];
         eraseRBs[i].ys[j] = allBodies[i].ys[j];
 
@@ -1492,7 +1353,6 @@ void stepBodyPositions(int i) {
         }
 
     }
-
     for(int k = 0; mustAdjust && (k < VERTICIES_PER_BODY); k++) {
         nt = allBodies[i].constThetas[k] + allBodies[i].theta;
         ndx = allBodies[i].vDistances[k] * cos(nt);
@@ -1504,6 +1364,7 @@ void stepBodyPositions(int i) {
         allBodies[i].xs[k] = PX_PER_M_RB * allBodies[i].pxs[k];
         allBodies[i].ys[k] = PX_PER_M_RB * allBodies[i].pys[k];
     }
+    updateRBMinsAndMaxes(i);
 
 }
 
@@ -1526,22 +1387,7 @@ void checkCollisions(int i) {
     
     for (int j = 0; j < VERTICIES_PER_BODY; j++) {
 
-        //interCollisionCount += checkInterBodyCollision(i, j, VERTICIES_PER_BODY+interCollisionCount);
-
         bool setActive = false;
-
-        // // Collision Map (inter-body) collision handling. This is SEGFAULT PRONE!!! 
-        // if(collisionMap[allBodies[i].xs[j]][allBodies[i].ys[j]] > 0) {
-        //     if((allBodies[i].v.y > 0) == (allBodies[i].ys[j] >= (MAX_Y-1))) {
-        //         allBodies[i].v.y = -allBodies[i].v.y * ELASTICITY_RB;
-        //     }
-
-        //     allBodies[i].extForces[j].force.x = -allBodies[i].mass * allBodies[i].a.x;
-        //     allBodies[i].extForces[j].force.y = -allBodies[i].mass * allBodies[i].a.y;
-
-        //     setActive = true;
-        //     collisionCount++;
-        // }
 
         // Container collision handling
         if(allBodies[i].xs[j] >= (MAX_X-1) || allBodies[i].xs[j] <= 0) {
@@ -1596,6 +1442,18 @@ void checkCollisions(int i) {
 
 }
 
+void checkMouseLocation(int i) {
+
+    if (!mData.left) {
+        currentMouseInteractionObj = -1;
+        return;
+    }
+    if((allBodies[i].minPX <= mData.x) && (mData.x <= allBodies[i].maxPX) && (allBodies[i].minPY <= mData.y) && (mData.y <= allBodies[i].maxPY)) {
+        if(currentMouseInteractionObj == -1) currentMouseInteractionObj = i;   
+    }
+
+}
+
 void timeStepRBForceApplication() {
 
     // model collisions with normal forces.
@@ -1603,22 +1461,29 @@ void timeStepRBForceApplication() {
         
         for (int j = 0; j < NUM_BODIES; j++) bookMarkedCollisions[i][j] = false;
 
-        allBodies[i].a.x = 0;
-        allBodies[i].a.y = G;
-        
-        float torque = 0;
-        for (int j = 0; j < MAX_EXTERNAL_FORCES; j++) {
-            if (!allBodies[i].extForces[j].isActive) continue;
-            // if (j >= VERTICIES_PER_BODY) {
-                // allBodies[i].a.x += allBodies[i].extForces[j].force.x / allBodies[i].mass;
-                // allBodies[i].a.y += allBodies[i].extForces[j].force.y / allBodies[i].mass;
-            // }
-            torque += allBodies[i].extForces[j].r.x * allBodies[i].extForces[j].force.y - allBodies[i].extForces[j].r.y * allBodies[i].extForces[j].force.x;
-        }
-        
-        allBodies[i].alpha = torque / allBodies[i].I;
-        checkCollisions(i);
-        stepBodyVelocities(i);
+        if (i != currentMouseInteractionObj) {
+
+            allBodies[i].a.x = 0;
+            allBodies[i].a.y = G_RB;
+            
+            float torque = 0;
+            for (int j = 0; j < MAX_EXTERNAL_FORCES; j++) {
+                if (!allBodies[i].extForces[j].isActive) continue;
+                allBodies[i].extForces[j].isActive = false;
+                // if (j >= VERTICIES_PER_BODY) {
+                //     allBodies[i].a.x += allBodies[i].extForces[j].force.x / allBodies[i].mass;
+                //     allBodies[i].a.y += allBodies[i].extForces[j].force.y / allBodies[i].mass;
+                // }
+                torque += allBodies[i].extForces[j].r.x * allBodies[i].extForces[j].force.y - allBodies[i].extForces[j].r.y * allBodies[i].extForces[j].force.x;
+            }
+            
+            allBodies[i].alpha = torque / allBodies[i].I;
+            checkMouseLocation(i);
+            checkCollisions(i);
+            stepBodyVelocities(i);
+
+        } 
+
         stepBodyPositions(i);
 
     }
@@ -1629,11 +1494,23 @@ void timeStepRBForceApplication() {
 //                                                   MAIN
 // =======================================================================================================
 
-bool isFluidSim = true;
-bool lastFluidSim = true;
+bool isFluidSim = false;
+bool lastFluidSim = false;
+bool errSt = false;
+bool errStLast = false;
 
 void buttonClickHandler() {
     isFluidSim = !isFluidSim;
+}
+void resetSimHandler() {
+    if (isFluidSim) {
+        eraseParticles();
+        initParticles(); 
+    }
+    else {
+        eraseBodies();
+        initRigidBodies();
+    }        
 }
 
 int main(void){ // main for this simulation
@@ -1651,11 +1528,15 @@ int main(void){ // main for this simulation
     // Program loop
     while(1) {
         
-        // isFluidSim = (*sw_ptr & 1) == 1;
+        errSt = (*sw_ptr & 1) == 1;
+
+        if(errSt!=errStLast) resetSimHandler();
+        errStLast = errSt;
         if (isFluidSim != lastFluidSim) {
             if (lastFluidSim) eraseParticles();
             else eraseBodies();
         }
+
         lastFluidSim = isFluidSim;
         // Erase Stuff
         if (isFluidSim) eraseParticles();
@@ -1672,8 +1553,6 @@ int main(void){ // main for this simulation
         prevmData = mData;
         
         // Update Stuff 
-        // prevmData = mData;
-        // updateMouse(&mData);
         
         if (isFluidSim) timeStepBucketwiseParticleUpdate();
         else timeStepRBForceApplication();
