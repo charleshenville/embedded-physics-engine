@@ -288,7 +288,7 @@ void intializeMouse(mouseData *data) {
 #define H_H                 8.0
 #define PARTICLE_MASS       0.1
 #define SPF                 0.02 // Seconds Per Frame
-#define ELASTICITY          0.2 // 0 to 1
+#define ELASTICITY          0.3 // 0 to 1
 #define VELOCITY_COLOUR_SENSITIVITY 50.0
 #define VISCOSITY           0.01
 #define ROOT_TWO_SCALE      1.414
