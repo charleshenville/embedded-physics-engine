@@ -1670,7 +1670,7 @@ void fastFowardHandler(){
 
 int main(void){ // main for this simulation
 
-    volatile int * sw_ptr = (volatile int *)SW_BASE;
+    // volatile int * sw_ptr = (volatile int *)SW_BASE;
 
     initParticles();
     initRigidBodies();
