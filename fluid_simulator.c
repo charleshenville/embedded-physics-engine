@@ -1047,19 +1047,23 @@ void timeStepBucketwiseParticleUpdate() {
 
 #define ELASTICITY_RB       0.4
 #define DEFAULT_SPH_RB      0.2
-#define NUM_BODIES          4
+#define NUM_BODIES          20
 
 #define G_RB                9.81
-#define EPSILON_RB          0.0000001
+#define EPSILON_RB          0.000001
 #define PX_PER_M_RB         1.0
 #define M_PER_PX_RB         1.0
+
+#define STEP_THRESH         2
+#define BAD_STEP_DAMP       0.1
+#define MAX_COLLISIONPT_DELTA   10.0
 
 #define INT_MAX_C           2147483647
 #define INT_MIN_C           -2147483648
 
 #define VERTICIES_PER_BODY  4
 #define MAX_EXTERNAL_FORCES (VERTICIES_PER_BODY + NUM_BODIES)
-#define VERT_VARIANCE       19
+#define VERT_VARIANCE       1
 #define VELOCITY_COLOUR_SENSITIVITY_RB 100.0
 
 #define BODY_DENSITY        2
@@ -1106,7 +1110,9 @@ typedef struct RigidBody {
     float constThetas [VERTICIES_PER_BODY];
     float omega;
     float alpha;
-
+    
+    Vector2D lastPointofCollision;
+    float lastPositionDelta;
     bool cLast;
 
     ExternalForce extForces [MAX_EXTERNAL_FORCES];
@@ -1340,6 +1346,21 @@ void checkSATInterBodyCollision(int i){
                 }
                 if (minSepBodyVertIdx == -1) continue;
             }
+            
+            Vector2D normedA;
+            if(!bookMarkedCollisions[minSepVertBodyIdx][minSepEdgeBodyIdx] && !bookMarkedCollisions[minSepEdgeBodyIdx][minSepVertBodyIdx]) {
+                normedA = constrVec(allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx], allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx]);
+                Vector2D normedB;
+
+                normedB = subVec2(&normedA, &allBodies[minSepVertBodyIdx].lastPointofCollision);
+                allBodies[minSepVertBodyIdx].lastPositionDelta = getMag(&normedB);
+                allBodies[minSepVertBodyIdx].lastPointofCollision = normedA;
+
+                normedB = subVec2(&normedA, &allBodies[minSepEdgeBodyIdx].lastPointofCollision);
+                allBodies[minSepEdgeBodyIdx].lastPositionDelta = getMag(&normedB);
+                allBodies[minSepEdgeBodyIdx].lastPointofCollision = normedA;
+
+            }
 
             // Manual Positional Adjustment
             float signX = allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx] > allBodies[minSepEdgeBodyIdx].cx ? 1 : -1;
@@ -1348,6 +1369,8 @@ void checkSATInterBodyCollision(int i){
             Vector2D unitNorm = multVec2(&normMinEdgeResponsible, (1/getMag(&normMinEdgeResponsible)));
             dx = unitNorm.x > 0 ? unitNorm.x : -unitNorm.x;
             dy = unitNorm.y > 0 ? unitNorm.y : -unitNorm.y;
+            dx *= signX;
+            dy *= signY;
             
             while(pointIsInsideRB(
                 allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx],
@@ -1359,59 +1382,47 @@ void checkSATInterBodyCollision(int i){
                 minSepEdgeBodyIdx)) {
                 // draw2b2(allBodies[minSepVertBodyIdx].xs[minSepBodyVertIdx], allBodies[minSepVertBodyIdx].ys[minSepBodyVertIdx], WATER_COLOUR);
                 
-                allBodies[minSepVertBodyIdx].cx += signX * dx;
-                allBodies[minSepVertBodyIdx].cy += signY * dy;
+                allBodies[minSepVertBodyIdx].cx += dx;
+                allBodies[minSepVertBodyIdx].cy += dy;
 
-                allBodies[minSepEdgeBodyIdx].cx -= signX * dx;
-                allBodies[minSepEdgeBodyIdx].cy -= signY * dy;
+                allBodies[minSepEdgeBodyIdx].cx -= dx;
+                allBodies[minSepEdgeBodyIdx].cy -= dy;
 
                 resetBodyFromCenter(minSepVertBodyIdx);
                 resetBodyFromCenter(minSepEdgeBodyIdx);
 
             }
-            
-            if(bookMarkedCollisions[minSepVertBodyIdx][minSepEdgeBodyIdx] || bookMarkedCollisions[minSepEdgeBodyIdx][minSepVertBodyIdx]) continue;
-            bookMarkedCollisions[minSepVertBodyIdx][minSepEdgeBodyIdx] = true;
-            bookMarkedCollisions[minSepEdgeBodyIdx][minSepVertBodyIdx] = true;
 
             // Torque handling
+            unitNorm.x = dx;
+            unitNorm.y = dy;
+
             allBodies[minSepVertBodyIdx].extForces[forceIndex].isActive = true;
-            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.x = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepEdgeBodyIdx].a.x;
-            allBodies[minSepVertBodyIdx].extForces[forceIndex].force.y = -allBodies[minSepEdgeBodyIdx].mass * allBodies[minSepEdgeBodyIdx].a.y;
+            float magB = allBodies[minSepEdgeBodyIdx].mass * getMag(&allBodies[minSepEdgeBodyIdx].a);
+            normedA = multVec2(&unitNorm, magB);
+            allBodies[minSepVertBodyIdx].extForces[forceIndex].force = normedA;
             allBodies[minSepVertBodyIdx].extForces[forceIndex].r.x = allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx] - allBodies[minSepVertBodyIdx].cx;
             allBodies[minSepVertBodyIdx].extForces[forceIndex].r.y = allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx] - allBodies[minSepVertBodyIdx].cy;
 
             allBodies[minSepEdgeBodyIdx].extForces[forceIndex].isActive = true;
-            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force.x = -allBodies[minSepVertBodyIdx].mass * allBodies[minSepVertBodyIdx].a.x;
-            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force.y = -allBodies[minSepVertBodyIdx].mass * allBodies[minSepVertBodyIdx].a.y;
+            float magA = allBodies[minSepVertBodyIdx].mass * getMag(&allBodies[minSepVertBodyIdx].a);
+            normedA = multVec2(&unitNorm, -magA);
+            allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force = normedA;
             allBodies[minSepEdgeBodyIdx].extForces[forceIndex].r.x = allBodies[minSepVertBodyIdx].pxs[minSepBodyVertIdx] - allBodies[minSepEdgeBodyIdx].cx;
             allBodies[minSepEdgeBodyIdx].extForces[forceIndex].r.y = allBodies[minSepVertBodyIdx].pys[minSepBodyVertIdx] - allBodies[minSepEdgeBodyIdx].cy;
             
-            unitNorm.y = dy;
-            Vector2D normedGrav = multVec2(&unitNorm, -G_RB);
-            if(allBodies[minSepEdgeBodyIdx].cy < allBodies[minSepVertBodyIdx].cy){
-                allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force = addVec2(&normedGrav, &allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force);
-            } else {
-                allBodies[minSepVertBodyIdx].extForces[forceIndex].force = addVec2(&normedGrav, &allBodies[minSepVertBodyIdx].extForces[forceIndex].force);
-            }
+            // Vector2D normedGrav = multVec2(&unitNorm, G_RB);
+            // if(allBodies[minSepEdgeBodyIdx].cy < allBodies[minSepVertBodyIdx].cy){
+            //     allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force = addVec2(&normedGrav, &allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force);
+            //     allBodies[minSepVertBodyIdx].extForces[forceIndex].force = multVec2(&allBodies[minSepVertBodyIdx].extForces[forceIndex].force, -1.0);
+            // } else {
+            //     allBodies[minSepVertBodyIdx].extForces[forceIndex].force = addVec2(&normedGrav, &allBodies[minSepVertBodyIdx].extForces[forceIndex].force);
+            //     allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force = multVec2(&allBodies[minSepEdgeBodyIdx].extForces[forceIndex].force, -1.0);
+            // }
             // for (int fIdx = 0; fIdx < MAX_EXTERNAL_FORCES; fIdx++) {
             //     allBodies[minSepVertBodyIdx].extForces[fIdx].isActive = false;
             //     allBodies[minSepEdgeBodyIdx].extForces[fIdx].isActive = false;
             // }
-
-            if(vertInsideCount>1){
-                allBodies[minSepVertBodyIdx].omega = 0.0;
-                allBodies[minSepEdgeBodyIdx].omega = 0.0;
-                allBodies[minSepVertBodyIdx].alpha = 0.0;
-                allBodies[minSepEdgeBodyIdx].alpha = 0.0;
-                allBodies[minSepVertBodyIdx].v.x = 0.0;
-                allBodies[minSepVertBodyIdx].v.y = 0.0;
-                allBodies[minSepEdgeBodyIdx].v.x = 0.0;
-                allBodies[minSepEdgeBodyIdx].v.y = 0.0;
-                allBodies[minSepVertBodyIdx].cLast = true;
-                allBodies[minSepEdgeBodyIdx].cLast = true;
-                continue;
-            }
 
             if(!allBodies[minSepVertBodyIdx].cLast && !allBodies[minSepEdgeBodyIdx].cLast) {
                 allBodies[minSepVertBodyIdx].v.x *= -ELASTICITY_RB;
@@ -1430,6 +1441,8 @@ void checkSATInterBodyCollision(int i){
                 // allBodies[minSepVertBodyIdx].omega *= ELASTICITY_RB;
                 // allBodies[minSepEdgeBodyIdx].omega *= ELASTICITY_RB;
             }
+            bookMarkedCollisions[minSepVertBodyIdx][minSepEdgeBodyIdx] = true;
+            bookMarkedCollisions[minSepEdgeBodyIdx][minSepVertBodyIdx] = true;
             allBodies[minSepVertBodyIdx].cLast = true;
             allBodies[minSepEdgeBodyIdx].cLast = true;
             continue;
@@ -1465,6 +1478,8 @@ void checkSATInterBodyCollision(int i){
             c1 = multVec2(&normMinEdgeResponsible, jCoeff);
             allBodies[minSepVertBodyIdx].omega += dotProd2D(&rAP, &c1)/allBodies[minSepVertBodyIdx].I;
             allBodies[minSepEdgeBodyIdx].omega -= dotProd2D(&rBP, &c1)/allBodies[minSepEdgeBodyIdx].I;
+            
+            
 
         }
     }
@@ -1520,6 +1535,7 @@ void initRigidBodies() {
         allBodies[i].theta = 0;
         allBodies[i].omega = 0;
 
+        allBodies[i].lastPointofCollision = constrVec(0.0, 0.0);
         for (int j = 0; j < VERTICIES_PER_BODY; j++) {
 
             srand(i+j);
@@ -1644,8 +1660,12 @@ void stepBodyPositions(int i) {
     // Must also update positions of all verticies
 
     float pt = allBodies[i].theta;
-
-    if (i!=currentMouseInteractionObj){
+    if(allBodies[i].cLast){
+        allBodies[i].omega *= ELASTICITY_RB * EPSILON_RB;
+        allBodies[i].omega *= ELASTICITY_RB * EPSILON_RB;
+    }
+    bool goStep = !allBodies[i].cLast || (allBodies[i].cLast && (allBodies[i].lastPositionDelta < MAX_COLLISIONPT_DELTA));
+    if (i!=currentMouseInteractionObj && goStep){
 
         if(-EPSILON_RB > allBodies[i].omega || EPSILON_RB < allBodies[i].omega){
             allBodies[i].theta += allBodies[i].omega * SPH_RB;
@@ -1657,7 +1677,21 @@ void stepBodyPositions(int i) {
             allBodies[i].cy += allBodies[i].v.y * SPH_RB;
         }
         
-    } 
+    } else if (!goStep) {
+
+        //Kill everything.
+        for(int k = 0; k < NUM_BODIES; k++){
+            allBodies[i].extForces[k].force.x = 0;
+            allBodies[i].extForces[k].force.y = 0;
+            allBodies[i].extForces[k].isActive = false;
+        }
+        allBodies[i].alpha = 0;
+        allBodies[i].v.x = 0;
+        allBodies[i].v.y = 0;
+        allBodies[i].a.x = 0;
+        allBodies[i].a.y = 0;
+
+    }
     // else {
     //     allBodies[i].cx = mData.x;
     //     allBodies[i].cy = mData.y;
@@ -1721,8 +1755,8 @@ void stepBodyVelocities(int i) {
 void checkCollisions(int i) {
 
     int collisionCount = 0;
-
     checkSATInterBodyCollision(i);
+    
     for (int j = 0; j < VERTICIES_PER_BODY; j++) {
 
         bool setActive = false;
@@ -1766,7 +1800,7 @@ void checkCollisions(int i) {
         
         if (setActive) {
             //if((allBodies[i].omega > 0) == (allBodies[i].alpha > 0)) allBodies[i].omega = -allBodies[i].omega * ELASTICITY_RB;
-            allBodies[i].omega *= ELASTICITY_RB * (0.1);
+            allBodies[i].omega *= ELASTICITY_RB * (0.001);
             allBodies[i].extForces[j].r.x = allBodies[i].pxs[j] - allBodies[i].cx;
             allBodies[i].extForces[j].r.y = allBodies[i].pys[j] - allBodies[i].cy;
         } else {
