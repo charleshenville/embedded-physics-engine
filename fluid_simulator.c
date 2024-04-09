@@ -207,6 +207,7 @@ void drawBresenhamLine(int x0, int y0, int x1, int y1, short int colour){
 #define FF_BUTTON_X             301
 #define FF_BUTTON_Y             52
 
+// Source for this mouse driver: DE1-SoC Computer System with ARM Cortex-A9
 void switchSimHandler();
 void resetSimHandler();
 void fastFowardHandler();
@@ -1299,6 +1300,8 @@ bool isColliding(int i, int j){
 }
 // Check if rigid body I has coillided with any rigid body j
 // Credit to the SAT. (Seperating Axis Theorem).
+// https://dyn4j.org/2010/01/sat/ For details
+// https://www.chrishecker.com/images/e/e7/Gdmphys3.pdf for impulse physics formulas
 void checkSATInterBodyCollision(int i){
     
     // if (i==currentMouseInteractionObj) return;
